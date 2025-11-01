@@ -1,0 +1,70 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+
+# Jupyter/VSCode
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+# Build/dist
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs and runtime
+*.log
+logs/
+nohup.out
+
+# Project-specific: models, datasets, caches, weights
+# Trained model artifacts
+*.pkl
+*.joblib
+*.pkl.json
+models/
+
+# Datasets (raw captures) - keep repo light; adjust if you want sample images
+/dataset/
+
+# DeepFace/face recognition caches & weights
+.deepface/
+.face_recognition_cache/
+
+# Spotify auth/cache
+.moodify_spotify_cache/
+.moodify_spotify_cache
+.cache-*
+
+# Media - avoid large binaries in git
+/media/mp3/
+*.mp3
+*.wav
+*.m4a
+*.flac
+
+# Arduino/PlatformIO build outputs
+.piolibdeps/
+.pio/
+*.elf
+*.bin
+
+# OS junk
+Thumbs.db
+Desktop.ini
