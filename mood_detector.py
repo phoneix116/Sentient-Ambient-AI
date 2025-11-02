@@ -151,6 +151,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_detector_backend(detector_backend: str) -> str:
+    """Return a compatible detector backend, falling back when needed.
+
+    mediapipe 0.10.x conflicts with protobuf >=4/5 (required by TF 2.20+).
+    If that conflict is detected, we fall back to opencv and log a warning.
+    """
+    backend = detector_backend
+    if backend == "mediapipe":
+        try:
+            from google.protobuf import __version__ as pb_ver  # type: ignore
+            major = int(str(pb_ver).split(".")[0])
+            if major >= 4:
+                print("[warn] mediapipe backend incompatible with protobuf>=4 (TF 2.20 uses protobuf>=5). Falling back to opencv.")
+                backend = "opencv"
+            else:
+                # ensure mediapipe import succeeds
+                __import__("mediapipe")
+        except Exception as e:
+            print(f"[warn] mediapipe backend unavailable ({e}). Falling back to opencv.")
+            backend = "opencv"
+    return backend
+
+
 def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", detector_backend: str = "opencv") -> Optional[str]:
     """Return canonical emotion from a frame using DeepFace.
 
@@ -159,15 +182,53 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", 
     processing errors.
     """
     # If a custom predictor is provided, use embedding + classifier path
+    # Resolve detector backend compatibility once per call (cheap)
+    _detector = _resolve_detector_backend(detector_backend)
+    if _detector != detector_backend:
+        # Log downgrade only occasionally would be nicer, but keep simple here
+        try:
+            print(f"[info] detector backend '{detector_backend}' -> using '{_detector}'")
+        except Exception:
+            pass
+
+    # Build a small fallback chain of detector backends to improve robustness
+    primary = _resolve_detector_backend(detector_backend)
+    fallbacks = []
+    # Prefer retinaface as an alternate if not primary
+    if primary != "retinaface":
+        fallbacks.append("retinaface")
+    if primary != "opencv":
+        fallbacks.append("opencv")
+    backends_to_try = [primary] + fallbacks
+
     if predictor is not None:
         try:
-            reps = DeepFace.represent(
-                img_path=frame,
-                model_name=embedding_model,
-                enforce_detection=False,
-                detector_backend=detector_backend,
-                align=True,
-            )
+            emb = None
+            used_be = None
+            for be in backends_to_try:
+                try:
+                    reps = DeepFace.represent(
+                        img_path=frame,
+                        model_name=embedding_model,
+                        enforce_detection=False,
+                        detector_backend=be,
+                        align=True,
+                    )
+                    if isinstance(reps, list) and reps:
+                        emb = reps[0].get("embedding")
+                    elif isinstance(reps, dict):
+                        emb = reps.get("embedding")
+                    if emb is not None:
+                        used_be = be
+                        break
+                except Exception:
+                    emb = None
+                    continue
+            if used_be and used_be != primary:
+                try:
+                    print(f"[info] detector fallback: '{primary}' -> '{used_be}' (custom engine)")
+                except Exception:
+                    pass
             if isinstance(reps, list) and reps:
                 emb = reps[0].get("embedding")
             elif isinstance(reps, dict):
@@ -184,11 +245,32 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", 
             if label_l in CANON_EMOTIONS:
                 return label_l
             return RAW_TO_CANON.get(label_l, "no_face")
-        except Exception:
+        except Exception as e:
+            # Surface common mismatch when embedding dims don't match the trained pipeline
+            try:
+                msg = str(e)
+                if "features" in msg or "shape" in msg or "Found array with" in msg:
+                    print(f"[error] custom classifier failed: {msg} (embedding={embedding_model})")
+            except Exception:
+                pass
             return "no_face"
     # Else, fallback to DeepFace built-in emotion head
     try:
-        analysis = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False, detector_backend=detector_backend)
+        analysis = None
+        used_be = None
+        for be in backends_to_try:
+            try:
+                analysis = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False, detector_backend=be)
+                used_be = be
+                break
+            except Exception:
+                analysis = None
+                continue
+        if used_be and used_be != primary:
+            try:
+                print(f"[info] detector fallback: '{primary}' -> '{used_be}' (deepface engine)")
+            except Exception:
+                pass
         # DeepFace may return a dict or a list of dicts depending on version
         if isinstance(analysis, list) and analysis:
             dominant = analysis[0].get("dominant_emotion")
@@ -669,6 +751,15 @@ def main():
                 predictor = None
             else:
                 print(f"Loaded custom classifier with labels: {predictor.get('labels')}")
+                # Prefer the embedding backbone stored in the model payload if present
+                try:
+                    saved_embed = predictor.get("embedding_model") if isinstance(predictor, dict) else None
+                    if isinstance(saved_embed, str) and saved_embed:
+                        if saved_embed != args.embedding_model:
+                            print(f"[info] overriding embedding model: runtime '{args.embedding_model}' -> saved '{saved_embed}'")
+                        args.embedding_model = saved_embed
+                except Exception:
+                    pass
                 try:
                     print(f"Using custom classifier: {args.custom_classifier} (embedding {args.embedding_model})")
                 except Exception:

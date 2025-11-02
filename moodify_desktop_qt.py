@@ -284,7 +284,7 @@ class MainWindow(QtWidgets.QMainWindow):
         moh = QtWidgets.QHBoxLayout(); moh.addWidget(self.modelOut, 1); moh.addWidget(self.modelSaveBtn); moh.addWidget(self.modelPickBtn)
         mow = QtWidgets.QWidget(); mow.setLayout(moh)
         tform.addRow("Model output", mow)
-        # Embedding, Algo & Detector for training
+    # Embedding, Algo & Detector for training
         self.embModel = QtWidgets.QComboBox(); self.embModel.addItems(["Facenet512", "VGG-Face", "ArcFace"]) ; self.embModel.setCurrentText("Facenet512")
         self.algCombo = QtWidgets.QComboBox(); self.algCombo.addItems(["logreg", "svm"]) ; self.algCombo.setCurrentText("logreg")
         self.trainDetectorCombo = QtWidgets.QComboBox(); self.trainDetectorCombo.addItems(["opencv", "retinaface", "mediapipe", "mtcnn", "ssd", "dlib"]) ; self.trainDetectorCombo.setCurrentText("opencv")
@@ -296,6 +296,17 @@ class MainWindow(QtWidgets.QMainWindow):
         eah.addWidget(QtWidgets.QLabel("Detector:")); eah.addWidget(self.trainDetectorCombo)
         eaw = QtWidgets.QWidget(); eaw.setLayout(eah)
         tform.addRow("Training options", eaw)
+        # Auto search option
+        ash = QtWidgets.QHBoxLayout()
+        self.autoSearch = QtWidgets.QCheckBox("Auto pick best (grid search)")
+        self.maxPerClass = QtWidgets.QSpinBox(); self.maxPerClass.setRange(0, 10000); self.maxPerClass.setValue(0)
+        self.maxPerClass.setToolTip("Limit images per class during search/training (0 = all)")
+        ash.addWidget(self.autoSearch)
+        ash.addSpacing(12)
+        ash.addWidget(QtWidgets.QLabel("Max imgs/class:"))
+        ash.addWidget(self.maxPerClass)
+        asw = QtWidgets.QWidget(); asw.setLayout(ash)
+        tform.addRow("Auto optimize", asw)
         # Capture row
         capLayout = QtWidgets.QGridLayout()
         self._counts = {k: QtWidgets.QLabel("0") for k in ["happy","sad","angry","neutral","fear"]}
@@ -688,9 +699,15 @@ class MainWindow(QtWidgets.QMainWindow):
         emb = self.embModel.currentText().strip()
         algo = self.algCombo.currentText().strip()
         args = [PY_EXE, os.path.join(ROOT, "custom_emotion_trainer.py"),
-                "--data-dir", ds, "--model-out", model_out,
-                "--embedding-model", emb, "--algo", algo,
-                "--detector-backend", self.trainDetectorCombo.currentText().strip()]
+                "--data-dir", ds, "--model-out", model_out]
+        if self.autoSearch.isChecked():
+            args += ["--auto-search"]
+            mpc = int(self.maxPerClass.value())
+            if mpc > 0:
+                args += ["--max-per-class", str(mpc)]
+        else:
+            args += ["--embedding-model", emb, "--algo", algo,
+                     "--detector-backend", self.trainDetectorCombo.currentText().strip()]
         self._append("[training] Launching: " + shlex.join(args))
         try:
             self._trainProc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -752,7 +769,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _set_training_ui(self, running: bool):
-        for w in (self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn, self.previewBtn, self.clearAllBtn):
+        for w in (self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn, self.previewBtn, self.clearAllBtn, self.autoSearch, self.maxPerClass, self.trainDetectorCombo):
             try:
                 w.setEnabled(not running)
             except Exception:

@@ -1,6 +1,7 @@
 opencv-python>=4.8,<5
 numpy>=1.24
 deepface>=0.0.79
+tensorflow==2.20.0
 requests>=2.31,<3
 PyQt6>=6.6,<7
 pygame>=2.5,<3
@@ -9,3 +10,9 @@ spotipy>=2.23,<3
 flask>=2.3,<3
 python-dotenv>=1.0,<2
 scikit-learn>=1.3,<2
+
+# Optional detector backends for DeepFace
+# Install all to enable all detector options in the app.
+mediapipe>=0.10
+mtcnn>=0.1.1
+retina-face>=0.0.13
