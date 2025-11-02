@@ -110,7 +110,8 @@ def _embed_bgr(img_bgr, model_name: str = "Facenet512", detector_backend: str = 
             return None
         if emb is None:
             return None
-        return np.asarray(emb, dtype=np.float32)
+        arr = np.asarray(emb, dtype=np.float32).reshape(-1)
+        return arr
     except Exception:
         return None
 
@@ -143,7 +144,9 @@ def load_dataset(root: str, model_name: str, detector_backend: str, max_per_clas
 
     if not X:
         raise SystemExit("No embeddings computed. Check images and model.")
-    return np.vstack(X), np.asarray(y, dtype=np.int64), labels
+    X_arr = np.vstack(X).astype(np.float32)
+    y_arr = np.asarray(y, dtype=np.int64)
+    return X_arr, y_arr, labels
 
 
 def train_classifier(X: np.ndarray, y: np.ndarray, algo: str = "logreg") -> Pipeline:
@@ -179,6 +182,7 @@ def _auto_search(
             try:
                 print(f"[search] Embedding={emb} | Detector={det} -> using {det_eff}")
                 X, y, labels = load_dataset(data_dir, model_name=emb, detector_backend=det_eff, max_per_class=max_per_class)
+                embed_dim = int(X.shape[1])
             except SystemExit as e:
                 print(f"[search] Skipping {emb}/{det_eff}: {e}")
                 continue
@@ -192,6 +196,7 @@ def _auto_search(
                         "embedding_model": emb,
                         "detector_backend": det_eff,
                         "algo": algo,
+                        "embedding_dim": embed_dim,
                         "f2_macro": float(f2_macro),
                         "n_train": int(X_train.shape[0]),
                         "n_test": int(X_test.shape[0]),
@@ -252,6 +257,7 @@ def main():
                 "pipeline": pipe,
                 "labels": labels,
                 "embedding_model": best["embedding_model"],
+                "embedding_dim": int(best.get("embedding_dim", 0)),
             }, out_path)
         except Exception as e:
             raise SystemExit(f"Failed to save model: {e}")
@@ -261,6 +267,7 @@ def main():
             "algo": best["algo"],
             "detector_backend": best["detector_backend"],
             "samples": int(sum(1 for _ in _list_images(args.data_dir))),
+            "embedding_dim": int(best.get("embedding_dim", 0)),
             "score": {"f2_macro": float(best["f2_macro"])},
         }
         try:
@@ -303,6 +310,7 @@ def main():
             "pipeline": pipe,
             "labels": labels,
             "embedding_model": args.embedding_model,
+            "embedding_dim": int(X.shape[1]),
         }
         out_path = os.path.abspath(os.path.expanduser(args.model_out))
         out_dir = os.path.dirname(out_path)
@@ -320,6 +328,7 @@ def main():
             "algo": args.algo,
             "detector_backend": args.detector_backend,
             "samples": int(X.shape[0]),
+            "embedding_dim": int(X.shape[1]),
         }
         try:
             with open(out_path + ".json", "w") as f:

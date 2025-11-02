@@ -239,6 +239,13 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", 
                 return "no_face"
             import numpy as _np  # local import to avoid global hard dep for non-custom path
             arr = _np.asarray(emb, dtype=_np.float32).reshape(1, -1)
+            # Validate embedding dimension if saved in predictor
+            try:
+                exp_dim = int(predictor.get("embedding_dim", 0))
+                if exp_dim and arr.shape[1] != exp_dim:
+                    print(f"[error] embedding dimension mismatch: expected {exp_dim}, got {arr.shape[1]} (embedding={embedding_model})")
+            except Exception:
+                pass
             pred = predictor["pipeline"].predict(arr)[0]
             label = predictor["labels"][int(pred)] if hasattr(pred, "__int__") else str(pred)
             label_l = label.lower()
