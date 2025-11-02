@@ -223,6 +223,20 @@ class MainWindow(QtWidgets.QMainWindow):
         modelGrp.setLayout(mf)
         runLayout.addWidget(modelGrp)
 
+        # Detection options on Run tab
+        detectGrp = QtWidgets.QGroupBox("Detection")
+        df = QtWidgets.QFormLayout()
+        self.engineCombo = QtWidgets.QComboBox()
+        self.engineCombo.addItems(["Auto", "DeepFace CNN", "Custom model"])
+        self.engineCombo.setCurrentText("Auto")
+        self.detectorCombo = QtWidgets.QComboBox()
+        self.detectorCombo.addItems(["opencv", "retinaface", "mediapipe", "mtcnn", "ssd", "dlib"]) 
+        self.detectorCombo.setCurrentText("opencv")
+        df.addRow("Emotion engine", self.engineCombo)
+        df.addRow("Detector backend", self.detectorCombo)
+        detectGrp.setLayout(df)
+        runLayout.addWidget(detectGrp)
+
         # Buttons row
         btns = QtWidgets.QHBoxLayout()
         self.startBtn = QtWidgets.QPushButton("Start")
@@ -270,10 +284,16 @@ class MainWindow(QtWidgets.QMainWindow):
         moh = QtWidgets.QHBoxLayout(); moh.addWidget(self.modelOut, 1); moh.addWidget(self.modelSaveBtn); moh.addWidget(self.modelPickBtn)
         mow = QtWidgets.QWidget(); mow.setLayout(moh)
         tform.addRow("Model output", mow)
-        # Embedding & Algo
+        # Embedding, Algo & Detector for training
         self.embModel = QtWidgets.QComboBox(); self.embModel.addItems(["Facenet512", "VGG-Face", "ArcFace"]) ; self.embModel.setCurrentText("Facenet512")
         self.algCombo = QtWidgets.QComboBox(); self.algCombo.addItems(["logreg", "svm"]) ; self.algCombo.setCurrentText("logreg")
-        eah = QtWidgets.QHBoxLayout(); eah.addWidget(QtWidgets.QLabel("Embedding:")); eah.addWidget(self.embModel); eah.addSpacing(16); eah.addWidget(QtWidgets.QLabel("Algo:")); eah.addWidget(self.algCombo)
+        self.trainDetectorCombo = QtWidgets.QComboBox(); self.trainDetectorCombo.addItems(["opencv", "retinaface", "mediapipe", "mtcnn", "ssd", "dlib"]) ; self.trainDetectorCombo.setCurrentText("opencv")
+        eah = QtWidgets.QHBoxLayout()
+        eah.addWidget(QtWidgets.QLabel("Embedding:")); eah.addWidget(self.embModel)
+        eah.addSpacing(16)
+        eah.addWidget(QtWidgets.QLabel("Algo:")); eah.addWidget(self.algCombo)
+        eah.addSpacing(16)
+        eah.addWidget(QtWidgets.QLabel("Detector:")); eah.addWidget(self.trainDetectorCombo)
         eaw = QtWidgets.QWidget(); eaw.setLayout(eah)
         tform.addRow("Training options", eaw)
         # Capture row
@@ -669,7 +689,8 @@ class MainWindow(QtWidgets.QMainWindow):
         algo = self.algCombo.currentText().strip()
         args = [PY_EXE, os.path.join(ROOT, "custom_emotion_trainer.py"),
                 "--data-dir", ds, "--model-out", model_out,
-                "--embedding-model", emb, "--algo", algo]
+                "--embedding-model", emb, "--algo", algo,
+                "--detector-backend", self.trainDetectorCombo.currentText().strip()]
         self._append("[training] Launching: " + shlex.join(args))
         try:
             self._trainProc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -723,7 +744,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.display, self.cameraIndex, self.minInterval, self.pauseNoFace,
             self.musicMode, self.musicDir, self.spDevice, self.spId, self.spSecret,
             self.spRedirect, self.spHappy, self.spSad, self.spAngry, self.spNeutral, self.spFear,
-            self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn,
+            self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn, self.engineCombo, self.detectorCombo,
         ):
             try:
                 w.setEnabled(not running if w is not self.spSecret else (not running and self.musicMode.currentText().lower() == "spotify"))
@@ -790,6 +811,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.pauseNoFace.isChecked():
             args += ["--no-face-behavior", "pause"]
 
+        # Detection engine and face detector backend
+        try:
+            engine_map = {
+                "Auto": "auto",
+                "DeepFace CNN": "deepface",
+                "Custom model": "custom",
+            }
+            eng_val = engine_map.get(self.engineCombo.currentText(), "auto")
+            args += ["--emotion-engine", eng_val, "--detector-backend", self.detectorCombo.currentText().strip()]
+        except Exception:
+            pass
+
         if self.musicMode.currentText().lower() == "spotify":
             args.append("--spotify")
             if self.spDevice.text().strip():
@@ -823,10 +856,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Update model label pre-launch
         try:
-            if self.useCustomModel.isChecked():
+            eng = getattr(self, "engineCombo", None).currentText() if hasattr(self, "engineCombo") else "Auto"
+            if eng == "DeepFace CNN":
+                self.modelLabel.setText("Model: DeepFace CNN (built-in)")
+            elif eng == "Custom model" or self.useCustomModel.isChecked():
                 self.modelLabel.setText(f"Model: {os.path.basename(self.modelOut.text().strip())} ({self.embModel.currentText().strip()})")
             else:
-                self.modelLabel.setText("Model: DeepFace built-in")
+                # Auto: reflect checkbox
+                if self.useCustomModel.isChecked():
+                    self.modelLabel.setText(f"Model: {os.path.basename(self.modelOut.text().strip())} ({self.embModel.currentText().strip()})")
+                else:
+                    self.modelLabel.setText("Model: DeepFace CNN (built-in)")
         except Exception:
             pass
         self._append("[desktop] Launching: " + shlex.join(args))
@@ -964,6 +1004,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.embModel.setCurrentText(str(get("train/emb_model", self.embModel.currentText())))
         self.algCombo.setCurrentText(str(get("train/algo", self.algCombo.currentText())))
         self.useCustomModel.setChecked(bool(get("train/use_model", False)))
+        # detection
+        try:
+            self.engineCombo.setCurrentText(str(get("detect/engine", self.engineCombo.currentText())))
+            self.detectorCombo.setCurrentText(str(get("detect/detector", self.detectorCombo.currentText())))
+            self.trainDetectorCombo.setCurrentText(str(get("train/detector", self.trainDetectorCombo.currentText())))
+        except Exception:
+            pass
     # (Brightness setting removed)
 
     def _save_settings(self):
@@ -991,6 +1038,13 @@ class MainWindow(QtWidgets.QMainWindow):
         s.setValue("train/emb_model", self.embModel.currentText())
         s.setValue("train/algo", self.algCombo.currentText())
         s.setValue("train/use_model", self.useCustomModel.isChecked())
+        # detection
+        try:
+            s.setValue("detect/engine", self.engineCombo.currentText())
+            s.setValue("detect/detector", self.detectorCombo.currentText())
+            s.setValue("train/detector", self.trainDetectorCombo.currentText())
+        except Exception:
+            pass
     # (Brightness setting removed)
 
 

@@ -71,13 +71,13 @@ def _list_images(root: str) -> List[Tuple[str, str]]:
     return pairs
 
 
-def _embed_bgr(img_bgr, model_name: str = "Facenet512") -> np.ndarray | None:
+def _embed_bgr(img_bgr, model_name: str = "Facenet512", detector_backend: str = "opencv") -> np.ndarray | None:
     try:
         reps = DeepFace.represent(
             img_path=img_bgr,
             model_name=model_name,
             enforce_detection=False,
-            detector_backend="opencv",
+            detector_backend=detector_backend,
             align=True,
         )
         if isinstance(reps, list) and reps:
@@ -93,7 +93,7 @@ def _embed_bgr(img_bgr, model_name: str = "Facenet512") -> np.ndarray | None:
         return None
 
 
-def load_dataset(root: str, model_name: str) -> tuple[np.ndarray, np.ndarray, List[str]]:
+def load_dataset(root: str, model_name: str, detector_backend: str) -> tuple[np.ndarray, np.ndarray, List[str]]:
     pairs = _list_images(root)
     if not pairs:
         raise SystemExit(f"No images found under '{root}'. Organize as <root>/<emotion>/*.jpg")
@@ -107,7 +107,7 @@ def load_dataset(root: str, model_name: str) -> tuple[np.ndarray, np.ndarray, Li
         if img is None:
             print(f"[warn] Failed to read image: {path}")
             continue
-        emb = _embed_bgr(img, model_name=model_name)
+        emb = _embed_bgr(img, model_name=model_name, detector_backend=detector_backend)
         if emb is None:
             print(f"[warn] No embedding for: {path}")
             continue
@@ -138,11 +138,12 @@ def main():
     ap.add_argument("--model-out", default="custom_emotions.pkl", help="Output path for trained model")
     ap.add_argument("--embedding-model", default="Facenet512", help="DeepFace embedding backbone (e.g., Facenet512, VGG-Face)")
     ap.add_argument("--algo", choices=["logreg", "svm"], default="logreg")
+    ap.add_argument("--detector-backend", choices=["opencv", "retinaface", "mediapipe", "mtcnn", "ssd", "dlib"], default="opencv")
     ap.add_argument("--test-split", type=float, default=0.2)
     args = ap.parse_args()
 
-    print(f"Loading dataset from {args.data_dir}…")
-    X, y, labels = load_dataset(args.data_dir, model_name=args.embedding_model)
+    print(f"Loading dataset from {args.data_dir}… (detector: {args.detector_backend})")
+    X, y, labels = load_dataset(args.data_dir, model_name=args.embedding_model, detector_backend=args.detector_backend)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_split, stratify=y, random_state=42)
 
     print(f"Training {args.algo} classifier on {X_train.shape[0]} samples…")
@@ -189,6 +190,7 @@ def main():
         "labels": labels,
         "embedding_model": args.embedding_model,
         "algo": args.algo,
+        "detector_backend": args.detector_backend,
         "samples": int(X.shape[0]),
     }
     try:

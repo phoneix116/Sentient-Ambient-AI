@@ -71,7 +71,7 @@ dataset/
 
 ```bash
 source .venv/bin/activate
-python custom_emotion_trainer.py --data-dir ./dataset --model-out custom_emotions.pkl --embedding-model Facenet512 --algo logreg
+python custom_emotion_trainer.py --data-dir ./dataset --model-out custom_emotions.pkl --embedding-model Facenet512 --algo logreg --detector-backend opencv
 ```
 
 3) Use the classifier in Moodify:
@@ -85,6 +85,7 @@ Notes:
 - Only canonical labels are allowed: happy, sad, angry, neutral, fear
 - You can adjust the stability window (`--buffer-len`) and strict-majority threshold (`--majority-frac`).
 - If you skip `--custom-classifier`, Moodify uses the built-in DeepFace emotion head.
+ - You can also pick the engine and detector from the Desktop app under Run → Detection and Training → Training options.
 
 Prepare music files on your laptop (MP3/OGG). Place them under `./media/mp3/` with these names:
 
@@ -117,6 +118,8 @@ Optional flags:
 - `--no-music` to disable local music playback.
  - `--custom-classifier` to use a trained classifier (.pkl) on DeepFace embeddings.
  - `--embedding-model` to pick the embedding backbone used with the custom classifier (default Facenet512).
+ - `--emotion-engine {auto|deepface|custom}` to choose between the built‑in DeepFace CNN head, your custom classifier, or auto (use custom when provided; default auto).
+ - `--detector-backend {opencv|retinaface|mediapipe|mtcnn|ssd|dlib}` to select the face detector passed to DeepFace (default opencv). RetinaFace is accurate but heavier; OpenCV is fastest.
 
 ## Usage
 - Start the ESP32 first; note its IP.

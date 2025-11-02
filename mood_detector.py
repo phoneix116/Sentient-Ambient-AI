@@ -132,13 +132,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--serial-port", default=None, help="Serial device for ESP32 (e.g., /dev/cu.SLAB_USBtoUART)")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default 115200)")
     parser.add_argument("--serial-log", action="store_true", help="Print ESP32 serial output while connected")
+    # Emotion analysis engine and detector backend
+    parser.add_argument(
+        "--emotion-engine",
+        choices=["auto", "deepface", "custom"],
+        default=os.getenv("MOODIFY_ENGINE", "auto").lower(),
+        help="Which engine to use: 'custom' (your trained model), 'deepface' (built-in CNN), or 'auto' (use custom if provided).",
+    )
+    parser.add_argument(
+        "--detector-backend",
+        choices=["opencv", "retinaface", "mediapipe", "mtcnn", "ssd", "dlib"],
+        default=os.getenv("MOODIFY_DETECTOR", "opencv").lower(),
+        help="Face detector backend passed to DeepFace (default opencv).",
+    )
     # Custom classifier on embeddings (optional)
     parser.add_argument("--custom-classifier", default=os.getenv("MOODIFY_CUSTOM_MODEL"), help="Path to a joblib .pkl trained by custom_emotion_trainer.py")
     parser.add_argument("--embedding-model", default=os.getenv("MOODIFY_EMBEDDING_MODEL", "Facenet512"), help="DeepFace embedding backbone for custom classifier (e.g., Facenet512)")
     return parser.parse_args()
 
 
-def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512") -> Optional[str]:
+def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", detector_backend: str = "opencv") -> Optional[str]:
     """Return canonical emotion from a frame using DeepFace.
 
     Returns one of CANON_EMOTIONS, or the string 'no_face' if no face was
@@ -152,7 +165,7 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512") 
                 img_path=frame,
                 model_name=embedding_model,
                 enforce_detection=False,
-                detector_backend="opencv",
+                detector_backend=detector_backend,
                 align=True,
             )
             if isinstance(reps, list) and reps:
@@ -175,7 +188,7 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512") 
             return "no_face"
     # Else, fallback to DeepFace built-in emotion head
     try:
-        analysis = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False)
+        analysis = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False, detector_backend=detector_backend)
         # DeepFace may return a dict or a list of dicts depending on version
         if isinstance(analysis, list) and analysis:
             dominant = analysis[0].get("dominant_emotion")
@@ -642,7 +655,12 @@ def main():
 
     music_mgr: Optional[object] = None
     predictor = None
-    if args.custom_classifier:
+    # Decide engine first: custom, deepface, or auto
+    engine = args.emotion_engine
+    if engine not in ("auto", "deepface", "custom"):
+        engine = "auto"
+
+    if engine in ("custom", "auto") and args.custom_classifier:
         try:
             import joblib as _joblib  # type: ignore
             predictor = _joblib.load(args.custom_classifier)
@@ -657,8 +675,14 @@ def main():
                     pass
         except Exception as e:
             print(f"Failed to load custom classifier: {e}")
-    if predictor is None:
-        print("Using DeepFace built-in emotion analysis (no custom classifier)")
+    # If engine explicitly deepface, ignore predictor
+    if engine == "deepface":
+        predictor = None
+    # Log selected engine
+    if predictor is not None:
+        print(f"Engine: custom | detector: {args.detector_backend}")
+    else:
+        print(f"Engine: deepface | detector: {args.detector_backend}")
     if args.spotify:
         try:
             mapping = {
@@ -741,7 +765,7 @@ def main():
             except queue.Empty:
                 continue
             try:
-                emo = analyze_emotion(frame, predictor=predictor, embedding_model=args.embedding_model)
+                emo = analyze_emotion(frame, predictor=predictor, embedding_model=args.embedding_model, detector_backend=args.detector_backend)
                 if emo is not None:
                     with buf_lock:
                         emotion_buffer.append(emo)
