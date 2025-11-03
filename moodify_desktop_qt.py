@@ -167,6 +167,26 @@ class MainWindow(QtWidgets.QMainWindow):
         vw = QtWidgets.QWidget(); vw.setLayout(vbox)
         form.addRow("Vision", vw)
 
+        # Live Preview (idle only)
+        self.previewGroup = QtWidgets.QGroupBox("Live Camera Preview (idle only)")
+        pv = QtWidgets.QVBoxLayout()
+        self.previewLabel = QtWidgets.QLabel()
+        self.previewLabel.setFixedSize(480, 360)
+        self.previewLabel.setStyleSheet("background:#111;border:1px solid #333")
+        hint = QtWidgets.QLabel("Preview runs when not started. Close other camera apps if blank.")
+        hint.setStyleSheet("color:#888;font-size:11px")
+        ph = QtWidgets.QHBoxLayout()
+        self.previewStartBtn = QtWidgets.QPushButton("Start Preview")
+        self.previewStopBtn = QtWidgets.QPushButton("Stop Preview")
+        ph.addWidget(self.previewStartBtn)
+        ph.addWidget(self.previewStopBtn)
+        ph.addStretch(1)
+        pv.addWidget(self.previewLabel, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        pv.addLayout(ph)
+        pv.addWidget(hint)
+        self.previewGroup.setLayout(pv)
+        runLayout.addWidget(self.previewGroup)
+
         # Music mode
         self.musicMode = QtWidgets.QComboBox()
         self.musicMode.addItems(["Local", "Spotify"])
@@ -353,6 +373,23 @@ class MainWindow(QtWidgets.QMainWindow):
         trainGroup.setLayout(tform)
         trainLayout.addWidget(trainGroup)
 
+        # Music controls
+        self.musicCtrlGroup = QtWidgets.QGroupBox("Music Controls")
+        mc = QtWidgets.QGridLayout()
+        self.nowPlaying = QtWidgets.QLabel("Now Playing: -")
+        self.nowPlaying.setStyleSheet("font-weight:500")
+        self.volumeSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.volumeSlider.setRange(0, 100)
+        self.volumeSlider.setValue(100)
+        self.pausePlayBtn = QtWidgets.QPushButton("Pause")
+        mc.addWidget(QtWidgets.QLabel("Now Playing:"), 0, 0)
+        mc.addWidget(self.nowPlaying, 0, 1, 1, 2)
+        mc.addWidget(QtWidgets.QLabel("Volume"), 1, 0)
+        mc.addWidget(self.volumeSlider, 1, 1)
+        mc.addWidget(self.pausePlayBtn, 1, 2)
+        self.musicCtrlGroup.setLayout(mc)
+        runLayout.addWidget(self.musicCtrlGroup)
+
         # Status + log moved to Logs tab
         self.statusLabel = QtWidgets.QLabel("Status: stopped")
         logsLayout.addWidget(self.statusLabel)
@@ -392,6 +429,31 @@ class MainWindow(QtWidgets.QMainWindow):
         # initial counts
         self._refresh_counts()
 
+        # Control file path/state used for music commands from GUI
+        self._controlPath = os.path.join(ROOT, ".moodify_control.json")
+        self._controlState = {"volume": 1.0}
+        try:
+            import json
+            with open(self._controlPath, "w") as f:
+                json.dump(self._controlState, f)
+        except Exception:
+            pass
+
+        # Preview machinery
+        self._previewTimer = QtCore.QTimer(self)
+        self._previewTimer.setInterval(40)  # ~25 FPS target
+        self._previewTimer.timeout.connect(self._on_preview_timer)
+        self._previewCap = None
+        self.previewStartBtn.clicked.connect(self._start_idle_preview)
+        self.previewStopBtn.clicked.connect(self._stop_idle_preview)
+        # Start preview by default
+        self._start_idle_preview()
+
+        # Music control wiring
+        self._paused = False
+        self.pausePlayBtn.clicked.connect(self._toggle_pause_play)
+        self.volumeSlider.valueChanged.connect(self._on_volume_changed)
+
     # UI helpers
     def _append(self, s: str):
         self.log.appendPlainText(s)
@@ -400,6 +462,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_logView") and self._logView is not None:
                 self._logView.appendPlainText(s)
                 self._logView.verticalScrollBar().setValue(self._logView.verticalScrollBar().maximum())
+        except Exception:
+            pass
+        # Lightweight parse for Now Playing / stable emotion lines
+        try:
+            txt = str(s)
+            if txt.startswith("Playing:"):
+                # Format: Playing: <emotion> (<file>)
+                self.nowPlaying.setText(txt.replace("Playing:", "").strip())
+            elif txt.startswith("New stable emotion:"):
+                # New stable emotion: happy -> ...
+                part = txt.split("New stable emotion:", 1)[1].strip()
+                emo = part.split(" ", 1)[0].strip()
+                self.nowPlaying.setText(f"{emo}")
         except Exception:
             pass
 
@@ -767,6 +842,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 w.setEnabled(not running if w is not self.spSecret else (not running and self.musicMode.currentText().lower() == "spotify"))
             except Exception:
                 pass
+        # Preview controls disabled when running
+        try:
+            self.previewGroup.setEnabled(not running)
+            if running:
+                self._stop_idle_preview()
+            elif not self._previewTimer.isActive():
+                self._start_idle_preview()
+        except Exception:
+            pass
 
     def _set_training_ui(self, running: bool):
         for w in (self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn, self.previewBtn, self.clearAllBtn, self.autoSearch, self.maxPerClass, self.trainDetectorCombo):
@@ -886,6 +970,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.modelLabel.setText("Model: DeepFace CNN (built-in)")
         except Exception:
             pass
+        # Pass control-file path for music commands
+        try:
+            args += ["--control-file", self._controlPath]
+        except Exception:
+            pass
         self._append("[desktop] Launching: " + shlex.join(args))
         try:
             self.proc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -920,6 +1009,89 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self.statusLabel.setText("Status: stopped")
             self._set_running_ui(False)
+
+    # --- Live Preview (idle only) ---
+    def _start_idle_preview(self):
+        # Don't start while running the main process to avoid camera contention
+        if self.proc and self.proc.poll() is None:
+            return
+        try:
+            import cv2
+            # Close previous
+            self._stop_idle_preview()
+            idx = int(self.cameraIndex.value())
+            cap = cv2.VideoCapture(idx)
+            if not cap.isOpened():
+                self._append(f"[preview] Failed to open camera index {idx}")
+                return
+            self._previewCap = cap
+            self._previewTimer.start()
+        except Exception as e:
+            self._append(f"[preview] Start failed: {e}")
+
+    def _stop_idle_preview(self):
+        try:
+            if self._previewTimer.isActive():
+                self._previewTimer.stop()
+        except Exception:
+            pass
+        try:
+            if self._previewCap is not None:
+                self._previewCap.release()
+        except Exception:
+            pass
+        self._previewCap = None
+
+    def _on_preview_timer(self):
+        if self._previewCap is None:
+            return
+        try:
+            import cv2
+            ok, frame = self._previewCap.read()
+            if not ok or frame is None:
+                return
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            try:
+                qfmt = QtGui.QImage.Format.Format_RGB888
+            except AttributeError:
+                qfmt = QtGui.QImage.Format_RGB888
+            qimg = QtGui.QImage(rgb.data, w, h, ch*w, qfmt)
+            pix = QtGui.QPixmap.fromImage(qimg).scaled(
+                self.previewLabel.width(), self.previewLabel.height(),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+            self.previewLabel.setPixmap(pix)
+        except Exception:
+            pass
+
+    # --- Music control helpers ---
+    def _write_control(self, update: dict):
+        try:
+            import json
+            # merge
+            self._controlState.update(update)
+            tmp = self._controlPath + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._controlState, f)
+            os.replace(tmp, self._controlPath)
+        except Exception as e:
+            self._append(f"[desktop] Failed to write control file: {e}")
+
+    def _toggle_pause_play(self):
+        self._paused = not self._paused
+        if self._paused:
+            self._write_control({"pause": True, "play": False})
+            self.pausePlayBtn.setText("Play")
+        else:
+            self._write_control({"play": True, "pause": False})
+            self.pausePlayBtn.setText("Pause")
+
+    def _on_volume_changed(self, val: int):
+        # Map 0-100 to 0.0-1.0
+        v = max(0.0, min(1.0, float(val) / 100.0))
+        self._write_control({"volume": v})
 
     def _send_test(self):
         # Try a quick one-shot TEST over serial without touching the running process
@@ -970,6 +1142,10 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         try:
             self._stop_training()
+        except Exception:
+            pass
+        try:
+            self._stop_idle_preview()
         except Exception:
             pass
         ev.accept()

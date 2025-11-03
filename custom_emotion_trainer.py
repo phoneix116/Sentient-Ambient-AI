@@ -116,7 +116,48 @@ def _embed_bgr(img_bgr, model_name: str = "Facenet512", detector_backend: str = 
         return None
 
 
-def load_dataset(root: str, model_name: str, detector_backend: str, max_per_class: int = 0) -> tuple[np.ndarray, np.ndarray, List[str]]:
+def _augment_image(img: np.ndarray) -> np.ndarray:
+    """Apply a random small augmentation: rotate, flip, brightness/contrast jitter, or zoom.
+
+    Returns a new BGR image of the same size.
+    """
+    h, w = img.shape[:2]
+    choice = int(np.random.randint(0, 4))
+    out = img.copy()
+    if choice == 0:
+        # small rotation
+        angle = float(np.random.uniform(-10, 10))
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+        out = cv2.warpAffine(out, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+    elif choice == 1:
+        # horizontal flip
+        out = cv2.flip(out, 1)
+    elif choice == 2:
+        # brightness/contrast jitter: new = alpha*img + beta
+        alpha = float(np.random.uniform(0.9, 1.1))
+        beta = float(np.random.uniform(-15, 15))
+        out = cv2.convertScaleAbs(out, alpha=alpha, beta=beta)
+    else:
+        # zoom 0.9-1.1 with crop/pad
+        scale = float(np.random.uniform(0.9, 1.1))
+        nz = cv2.resize(out, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
+        nh, nw = nz.shape[:2]
+        if scale >= 1.0:
+            # center-crop back to original size
+            y0 = (nh - h) // 2
+            x0 = (nw - w) // 2
+            out = nz[y0:y0 + h, x0:x0 + w]
+        else:
+            # place on canvas
+            canvas = np.zeros_like(out)
+            y0 = (h - nh) // 2
+            x0 = (w - nw) // 2
+            canvas[y0:y0 + nh, x0:x0 + nw] = nz
+            out = canvas
+    return out
+
+
+def load_dataset(root: str, model_name: str, detector_backend: str, max_per_class: int = 0, augment: int = 0) -> tuple[np.ndarray, np.ndarray, List[str]]:
     detector_backend = _resolve_detector_backend(detector_backend)
     pairs = _list_images(root)
     if not pairs:
@@ -141,6 +182,16 @@ def load_dataset(root: str, model_name: str, detector_backend: str, max_per_clas
         X.append(emb)
         y.append(label_to_idx[lbl])
         per_class_counts[lbl] = per_class_counts.get(lbl, 0) + 1
+        # Generate augmented variants
+        for _ in range(max(0, int(augment))):
+            try:
+                aug = _augment_image(img)
+                aemb = _embed_bgr(aug, model_name=model_name, detector_backend=detector_backend)
+                if aemb is not None:
+                    X.append(aemb)
+                    y.append(label_to_idx[lbl])
+            except Exception:
+                pass
 
     if not X:
         raise SystemExit("No embeddings computed. Check images and model.")
@@ -229,6 +280,7 @@ def main():
     ap.add_argument("--search-detectors", default="opencv,retinaface,mtcnn,dlib,ssd,mediapipe", help="Comma-separated detectors to try when --auto-search")
     ap.add_argument("--search-algos", default="logreg,svm", help="Comma-separated algos to try when --auto-search")
     ap.add_argument("--max-per-class", type=int, default=0, help="Cap images per class during search/training (0=all)")
+    ap.add_argument("--augment", type=int, default=0, help="Number of augmented variants to generate per image during training")
     args = ap.parse_args()
     if args.auto_search:
         emb_list = [s.strip() for s in args.search_embeddings.split(",") if s.strip()]
@@ -280,8 +332,14 @@ def main():
         print(f"Saved model to {out_path}, metadata to {out_path}.json, and search results to {out_path}.search.json")
         return
     else:
-        print(f"Loading dataset from {args.data_dir}… (detector: {args.detector_backend})")
-        X, y, labels = load_dataset(args.data_dir, model_name=args.embedding_model, detector_backend=args.detector_backend, max_per_class=max(0, int(args.max_per_class)))
+        print(f"Loading dataset from {args.data_dir}… (detector: {args.detector_backend}), augment={args.augment}")
+        X, y, labels = load_dataset(
+            args.data_dir,
+            model_name=args.embedding_model,
+            detector_backend=args.detector_backend,
+            max_per_class=max(0, int(args.max_per_class)),
+            augment=max(0, int(args.augment)),
+        )
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_split, stratify=y, random_state=42)
 
         print(f"Training {args.algo} classifier on {X_train.shape[0]} samples…")

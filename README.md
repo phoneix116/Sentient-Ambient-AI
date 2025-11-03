@@ -4,7 +4,7 @@ Smart desk lamp: webcam-driven emotion detection on your computer, smooth ambien
 
 ## Overview
 - Brain (Python): Captures webcam frames, runs DeepFace emotion detection, stabilizes predictions via a 50-frame buffer with a strict-majority rule, calls the ESP32 over serial/HTTP when the stable emotion changes, and plays background music locally or via Spotify with smooth fades.
-- Actuator (ESP32): Receives /mood?emotion=..., and smoothly blends LED colors using FastLED (no DFPlayer required).
+- Actuator (ESP32): Receives commands over Serial (USB) or optional HTTP (/mood?emotion=...), and smoothly blends LED colors using Adafruit_NeoPixel.
 
 Supported emotions: `happy`, `sad`, `angry`, `neutral`, `fear` (stress proxy). DeepFace's `disgust` maps to `angry` and `surprise` maps to `happy`.
 
@@ -18,7 +18,7 @@ Supported emotions: `happy`, `sad`, `angry`, `neutral`, `fear` (stress proxy). D
 
 ## ESP32 Setup
 1. Open `mood_actuator.ino` in Arduino IDE / PlatformIO.
-2. Install libraries: FastLED (ESP32 core provides WiFi/WebServer).
+2. Install libraries: Adafruit NeoPixel (ESP32 core provides Serial and optional WiFi/WebServer).
 3. Set your Wi-Fi credentials at the top of the sketch.
 4. Flash to ESP32. Open Serial Monitor to see the assigned IP.
 5. No DFPlayer needed. Music is played on the host computer.
@@ -112,14 +112,17 @@ Replace `/dev/cu.SLAB_USBtoUART` with your actual device; on macOS with CP210x i
 Optional flags:
 - `--display` to show the webcam preview with overlay text.
 - `--camera-index` to select a different camera.
-- `--buffer-len` to adjust stability window (default 50).
+- `--buffer-len` to adjust stability window (default 50). Set to 0 to auto-size to ~2.5s based on measured FPS.
 - `--majority-frac` to require a minimum fraction for the winner (default 0.5 = strict >50% majority). If the top emotion doesn't reach the threshold or there's a tie, the system holds the previous state.
+- `--hold-seconds` to enforce a cooldown minimum time before switching to a new stable emotion (prevents flicker).
+- `--no-face-grace` to wait a short grace period after losing the face before switching to neutral/pause.
 - `--music-dir` to point to a custom folder with tracks (default ./media/mp3).
 - `--no-music` to disable local music playback.
  - `--custom-classifier` to use a trained classifier (.pkl) on DeepFace embeddings.
  - `--embedding-model` to pick the embedding backbone used with the custom classifier (default Facenet512).
  - `--emotion-engine {auto|deepface|custom}` to choose between the built‑in DeepFace CNN head, your custom classifier, or auto (use custom when provided; default auto).
- - `--detector-backend {opencv|retinaface|mediapipe|mtcnn|ssd|dlib}` to select the face detector passed to DeepFace (default opencv). RetinaFace is accurate but heavier; OpenCV is fastest.
+ - `--detector-backend {opencv|retinaface|mtcnn|ssd|dlib}` to select the face detector passed to DeepFace (default opencv). RetinaFace is accurate but heavier; OpenCV is fastest.
+	 Note: mediapipe is intentionally excluded from requirements due to protobuf/TensorFlow version conflicts.
 
 ## Usage
 - Start the ESP32 first; note its IP.

@@ -90,6 +90,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--camera-index", type=int, default=0, help="OpenCV camera index (default 0)")
     parser.add_argument("--buffer-len", type=int, default=50, help="Stability buffer size (default 50)")
+    parser.add_argument("--hold-seconds", type=float, default=5.0, help="Minimum time to hold a stable emotion before allowing a change")
+    parser.add_argument("--no-face-grace", type=float, default=1.5, help="Seconds to wait after losing face before applying no-face behavior")
     parser.add_argument(
         "--majority-frac",
         type=float,
@@ -148,6 +150,8 @@ def parse_args() -> argparse.Namespace:
     # Custom classifier on embeddings (optional)
     parser.add_argument("--custom-classifier", default=os.getenv("MOODIFY_CUSTOM_MODEL"), help="Path to a joblib .pkl trained by custom_emotion_trainer.py")
     parser.add_argument("--embedding-model", default=os.getenv("MOODIFY_EMBEDDING_MODEL", "Facenet512"), help="DeepFace embedding backbone for custom classifier (e.g., Facenet512)")
+    # Optional simple control file for GUI commands (pause/play/volume)
+    parser.add_argument("--control-file", default=None, help="Path to a JSON control file written by the desktop app for pause/play/volume")
     return parser.parse_args()
 
 
@@ -193,13 +197,12 @@ def analyze_emotion(frame, predictor=None, embedding_model: str = "Facenet512", 
 
     # Build a small fallback chain of detector backends to improve robustness
     primary = _resolve_detector_backend(detector_backend)
-    fallbacks = []
-    # Prefer retinaface as an alternate if not primary
-    if primary != "retinaface":
-        fallbacks.append("retinaface")
-    if primary != "opencv":
-        fallbacks.append("opencv")
-    backends_to_try = [primary] + fallbacks
+    # Try strong→fast: retinaface, opencv, mtcnn (ensure uniqueness and keep primary first)
+    candidates = [primary] + [b for b in ["retinaface", "opencv", "mtcnn"] if b != primary]
+    backends_to_try = []
+    for b in candidates:
+        if b not in backends_to_try:
+            backends_to_try.append(b)
 
     if predictor is not None:
         try:
@@ -520,6 +523,10 @@ class MusicManager:
             # start with fade-in
             self.pygame.mixer.music.play(loops=-1, fade_ms=self.fade_ms)
             self.current = emotion
+            try:
+                print(f"Playing: {emotion} ({os.path.basename(path)})")
+            except Exception:
+                pass
         except Exception as e:
             print(f"Failed to play '{emotion}' ({path}): {e}")
 
@@ -530,6 +537,16 @@ class MusicManager:
             if self.pygame.mixer.music.get_busy():
                 self.pygame.mixer.music.pause()
                 self._paused = True
+        except Exception:
+            pass
+
+    def set_volume(self, vol: float):
+        """Set volume in [0.0, 1.0]."""
+        if not self.enabled:
+            return
+        try:
+            v = float(max(0.0, min(1.0, vol)))
+            self.pygame.mixer.music.set_volume(v)
         except Exception:
             pass
 
@@ -733,13 +750,27 @@ class SpotifyMusicManager:
         except Exception:
             pass
 
+    def set_volume(self, vol: float):
+        """Set device volume using percentage 0-100 mapped from [0.0, 1.0]."""
+        if self.device_id is None:
+            return
+        try:
+            pct = int(max(0, min(100, round(float(vol) * 100))))
+            self._api_call(self.sp.volume, pct, device_id=self.device_id)
+        except Exception:
+            pass
+
 
 def main():
     args = parse_args()
 
-    emotion_buffer: Deque[str] = collections.deque(maxlen=args.buffer_len)
+    # Initialize stability buffer; if buffer_len <= 0, defer to auto-size with a sane temporary size
+    temp_buf_len = args.buffer_len if args.buffer_len and args.buffer_len > 0 else 25
+    emotion_buffer: Deque[str] = collections.deque(maxlen=int(temp_buf_len))
     last_sent_emotion: Optional[str] = None
     last_send_time = 0.0
+    last_stable_change_time = 0.0
+    no_face_first_seen = 0.0
     buf_lock = threading.Lock()
 
     music_mgr: Optional[object] = None
@@ -855,6 +886,11 @@ def main():
     capture_frames = 0
     analysis_frames = 0
     fps_window_start = time.time()
+    auto_buf_enabled = args.buffer_len is None or args.buffer_len <= 0
+    auto_buf_applied = not auto_buf_enabled
+    # Control file watcher
+    control_path = args.control_file
+    control_last_mtime = 0.0
 
     def analysis_worker():
         while not stop_event.is_set():
@@ -867,9 +903,7 @@ def main():
                 if emo is not None:
                     with buf_lock:
                         emotion_buffer.append(emo)
-                        # Count analysis output frames
-                        nonlocal_analysis = True
-                analysis_nonlocal = False
+                # Count analysis output frames
             except Exception as e:
                 print(f"Analysis worker error: {e}")
                 time.sleep(0.1)
@@ -880,7 +914,6 @@ def main():
                     pass
             try:
                 # Increment analysis counter outside locks
-                nonlocal analysis_frames
                 analysis_frames += 1
             except Exception:
                 pass
@@ -892,8 +925,8 @@ def main():
         while True:
             ok, frame = cap.read()
             if not ok:
-                print("Warning: Failed to read frame from webcam.")
-                time.sleep(0.05)
+                print("Warning: Failed to read frame from webcam. Retrying…")
+                time.sleep(0.5)
                 continue
             capture_frames += 1
 
@@ -915,8 +948,57 @@ def main():
 
             now = time.time()
 
+            # Auto-size buffer after ~2s if requested (buffer-len <= 0)
+            if not auto_buf_applied and (now - fps_window_start) >= 2.0 and capture_frames > 0:
+                fps_est = capture_frames / max(1e-6, (now - fps_window_start))
+                new_len = int(max(15, min(200, fps_est * 2.5)))
+                with buf_lock:
+                    prev = list(emotion_buffer)
+                    emotion_buffer = collections.deque(prev[-new_len:], maxlen=new_len)
+                auto_buf_applied = True
+                print(f"[info] auto buffer_len set to {new_len} (~2.5s @ {fps_est:.1f} FPS)")
+
+            # GUI control file: apply pause/play/volume commands if present
+            if control_path:
+                try:
+                    import os as _os, json as _json
+                    mt = _os.path.getmtime(control_path) if _os.path.exists(control_path) else 0.0
+                    if mt > control_last_mtime:
+                        control_last_mtime = mt
+                        with open(control_path, "r") as _f:
+                            cfg = _json.load(_f)
+                        if isinstance(cfg, dict) and music_mgr is not None:
+                            # Volume control
+                            if "volume" in cfg:
+                                v = float(cfg.get("volume", 1.0))
+                                setter = getattr(music_mgr, "set_volume", None)
+                                if callable(setter):
+                                    setter(v)
+                            # Pause
+                            if cfg.get("pause") is True:
+                                pa = getattr(music_mgr, "pause", None)
+                                if callable(pa):
+                                    pa()
+                            # Play/Resume
+                            if cfg.get("play") is True:
+                                try:
+                                    cur = getattr(music_mgr, "current", None)
+                                    if isinstance(cur, str) and cur:
+                                        music_mgr.change_to(cur)
+                                    else:
+                                        music_mgr.change_to(last_sent_emotion or "neutral")
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
             # Handle explicit no_face state by driving to neutral once
             if stable == "no_face" and (now - last_send_time) >= args.min_interval and (last_sent_emotion != ("neutral" if args.no_face_behavior == "neutral" else "no_face")):
+                # Grace period before applying no-face behavior
+                if no_face_first_seen == 0.0:
+                    no_face_first_seen = now
+                if (now - no_face_first_seen) < max(0.0, float(args.no_face_grace)):
+                    continue
                 # LEDs: always drive to neutral; Music: pause or neutral per setting
                 target = "neutral"
                 sent_serial = False
@@ -942,30 +1024,38 @@ def main():
                 if ok_send or sent_serial:
                     last_sent_emotion = "no_face" if args.no_face_behavior == "pause" else target
                     last_send_time = now
+                    last_stable_change_time = now
 
             # Normal emotion changes
             elif stable and stable != "no_face" and stable != last_sent_emotion and (now - last_send_time) >= args.min_interval:
-                # 1) Update ESP32 LEDs (prefer serial if available)
-                sent_serial = False
-                if ser_mgr is not None:
-                    sent_serial = ser_mgr.send_emotion(stable)
-                ok_send = True
-                status = "SERIAL" if sent_serial else "HTTP"
-                if not sent_serial:
-                    ok_send = send_command(args.esp32_ip, stable)
-                    status += ":OK" if ok_send else ":FAILED"
-                # 2) Update music
-                if music_mgr is not None and getattr(music_mgr, "enabled", True):
-                    try:
-                        music_mgr.change_to(stable)
-                    except Exception:
-                        pass
+                # Face is back; reset no-face timer
+                no_face_first_seen = 0.0
+                # Enforce hold/cooldown window
+                if (now - last_stable_change_time) < max(0.0, float(args.hold_seconds)):
+                    pass  # still holding last emotion
+                else:
+                    # 1) Update ESP32 LEDs (prefer serial if available)
+                    sent_serial = False
+                    if ser_mgr is not None:
+                        sent_serial = ser_mgr.send_emotion(stable)
+                    ok_send = True
+                    status = "SERIAL" if sent_serial else "HTTP"
+                    if not sent_serial:
+                        ok_send = send_command(args.esp32_ip, stable)
+                        status += ":OK" if ok_send else ":FAILED"
+                    # 2) Update music
+                    if music_mgr is not None and getattr(music_mgr, "enabled", True):
+                        try:
+                            music_mgr.change_to(stable)
+                        except Exception:
+                            pass
 
-                music_on = bool(music_mgr is not None and getattr(music_mgr, "enabled", True))
-                print(f"New stable emotion: {stable} -> {status} | music {'ON' if music_on else 'OFF'}")
-                if ok_send or sent_serial:
-                    last_sent_emotion = stable
-                    last_send_time = now
+                    music_on = bool(music_mgr is not None and getattr(music_mgr, "enabled", True))
+                    print(f"New stable emotion: {stable} -> {status} | music {'ON' if music_on else 'OFF'}")
+                    if ok_send or sent_serial:
+                        last_sent_emotion = stable
+                        last_send_time = now
+                        last_stable_change_time = now
 
             if args.display:
                 # Overlay
