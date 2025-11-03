@@ -893,6 +893,7 @@ def main():
     control_last_mtime = 0.0
 
     def analysis_worker():
+        nonlocal analysis_frames
         while not stop_event.is_set():
             try:
                 frame = frame_queue.get(timeout=0.2)

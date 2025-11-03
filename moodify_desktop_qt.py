@@ -446,13 +446,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._previewCap = None
         self.previewStartBtn.clicked.connect(self._start_idle_preview)
         self.previewStopBtn.clicked.connect(self._stop_idle_preview)
-        # Start preview by default
-        self._start_idle_preview()
 
         # Music control wiring
         self._paused = False
         self.pausePlayBtn.clicked.connect(self._toggle_pause_play)
         self.volumeSlider.valueChanged.connect(self._on_volume_changed)
+
+        # Restore persisted settings after widgets exist
+        try:
+            self._load_settings()
+        except Exception as e:
+            self._append(f"[desktop] Failed to load settings: {e}")
+
+        # Start preview by default (uses restored camera index)
+        self._start_idle_preview()
 
     # UI helpers
     def _append(self, s: str):
