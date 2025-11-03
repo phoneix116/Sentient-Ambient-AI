@@ -21,7 +21,7 @@ static RGB currentColor = {255, 255, 255}; // start white to match previous defa
 
 // --- Serial Protocol ---
 // Host sends lines like: EMOTION:happy\n
-// Valid emotions: happy, sad, angry, neutral, fear
+// Valid emotions: happy, sad, angry, neutral, fear, disgust, surprise
 
 // --- State Variables for Transitions ---
 String currentMood = "neutral";
@@ -100,6 +100,10 @@ void handleSerialCommand(const String &line) {
     fadeToColor(255, 255, 255);
   } else if (mood == "fear") { // 'fear' is the proxy for 'stressed'
     fadeToColor(0, 255, 255);
+  } else if (mood == "disgust") {
+    fadeToColor(0, 255, 128);
+  } else if (mood == "surprise") {
+    fadeToColor(255, 0, 255);
   } else {
     Serial.println("Unknown emotion");
   }

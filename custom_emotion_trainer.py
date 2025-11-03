@@ -6,17 +6,21 @@ Train a lightweight classifier on top of DeepFace embeddings using a
 user-provided image dataset organized as:
 
 dataset/
-  happy/
-    img001.jpg
-    img002.png
-  sad/
-    ...
-  angry/
-    ...
-  neutral/
-    ...
-  fear/
-    ...
+    happy/
+        img001.jpg
+        img002.png
+    sad/
+        ...
+    angry/
+        ...
+    neutral/
+        ...
+    fear/
+        ...
+    disgust/
+        ...
+    surprise/
+        ...
 
 This script computes face embeddings for each image (using a fixed backbone
 like Facenet512), trains a scikit-learn classifier (LogisticRegression by
@@ -52,7 +56,7 @@ except Exception as e:  # pragma: no cover
     raise SystemExit("scikit-learn is required. pip install scikit-learn") from e
 
 
-CANON_EMOTIONS = {"happy", "sad", "angry", "neutral", "fear"}
+CANON_EMOTIONS = {"happy", "sad", "angry", "neutral", "fear", "disgust", "surprise"}
 
 
 def _resolve_detector_backend(detector_backend: str) -> str:

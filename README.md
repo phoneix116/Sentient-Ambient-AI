@@ -6,7 +6,7 @@ Smart desk lamp: webcam-driven emotion detection on your computer, smooth ambien
 - Brain (Python): Captures webcam frames, runs DeepFace emotion detection, stabilizes predictions via a 50-frame buffer with a strict-majority rule, calls the ESP32 over serial/HTTP when the stable emotion changes, and plays background music locally or via Spotify with smooth fades.
 - Actuator (ESP32): Receives commands over Serial (USB) or optional HTTP (/mood?emotion=...), and smoothly blends LED colors using Adafruit_NeoPixel.
 
-Supported emotions: `happy`, `sad`, `angry`, `neutral`, `fear` (stress proxy). DeepFace's `disgust` maps to `angry` and `surprise` maps to `happy`.
+Supported emotions: `happy`, `sad`, `angry`, `neutral`, `fear` (stress proxy), `disgust`, `surprise`.
 
 ## Hardware
 - ESP32 dev board
@@ -49,6 +49,8 @@ SP_SAD="spotify:playlist:..."
 SP_ANGRY="spotify:playlist:..."
 SP_NEUTRAL="spotify:playlist:..."
 SP_FEAR="spotify:playlist:..."
+SP_DISGUST="spotify:playlist:..."
+SP_SURPRISE="spotify:playlist:..."
 ```
 
 All values can still be overridden via command-line flags.
@@ -60,11 +62,13 @@ You can train a per-user classifier on top of DeepFace embeddings using your own
 
 ```
 dataset/
-	happy/   img001.jpg img002.png ...
-	sad/     ...
-	angry/   ...
-	neutral/ ...
-	fear/    ...
+	happy/    img001.jpg img002.png ...
+	sad/      ...
+	angry/    ...
+	neutral/  ...
+	fear/     ...
+	disgust/  ...
+	surprise/ ...
 ```
 
 2) Train the classifier and save it:
@@ -82,7 +86,7 @@ python mood_detector.py --serial-port /dev/cu.SLAB_USBtoUART --display \
 ```
 
 Notes:
-- Only canonical labels are allowed: happy, sad, angry, neutral, fear
+- Only canonical labels are allowed: happy, sad, angry, neutral, fear, disgust, surprise
 - You can adjust the stability window (`--buffer-len`) and strict-majority threshold (`--majority-frac`).
 - If you skip `--custom-classifier`, Moodify uses the built-in DeepFace emotion head.
  - You can also pick the engine and detector from the Desktop app under Run → Detection and Training → Training options.
@@ -96,6 +100,8 @@ media/mp3/
 	0003_angry.mp3
 	0004_neutral.mp3
 	0005_fear.mp3
+	0006_disgust.mp3
+	0007_surprise.mp3
 ```
 
 Run the Brain (Wi‑Fi mode, replace IP as needed):

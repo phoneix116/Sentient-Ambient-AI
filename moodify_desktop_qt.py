@@ -57,6 +57,24 @@ SCRIPT = os.path.join(ROOT, "mood_detector.py")
 CACHE_FILE = os.path.join(ROOT, ".moodify_spotify_cache")
 
 
+class SquareLabel(QtWidgets.QLabel):
+    """Label that keeps height in sync with width for a square preview."""
+
+    def hasHeightForWidth(self) -> bool:  # pragma: no cover - Qt hook
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # pragma: no cover - Qt hook
+        return width
+
+    def sizeHint(self) -> QtCore.QSize:  # pragma: no cover - Qt hook
+        hint = super().sizeHint()
+        side = max(hint.width(), hint.height(), 360)
+        return QtCore.QSize(side, side)
+
+    def minimumSizeHint(self) -> QtCore.QSize:  # pragma: no cover - Qt hook
+        return QtCore.QSize(360, 360)
+
+
 class LogReader(QtCore.QThread):
     line = Signal(str)
     exited = Signal(int)
@@ -170,9 +188,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Live Preview (idle only)
         self.previewGroup = QtWidgets.QGroupBox("Live Camera Preview (idle only)")
         pv = QtWidgets.QVBoxLayout()
-        self.previewLabel = QtWidgets.QLabel()
-        self.previewLabel.setFixedSize(480, 360)
+        self.previewLabel = SquareLabel()
+        self.previewLabel.setMinimumSize(200, 200)
+        try:
+            pol_exp = QtWidgets.QSizePolicy.Policy.Expanding
+        except AttributeError:
+            pol_exp = QtWidgets.QSizePolicy.Expanding
+        self.previewLabel.setSizePolicy(pol_exp, pol_exp)
         self.previewLabel.setStyleSheet("background:#111;border:1px solid #333")
+        self.previewLabel.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         hint = QtWidgets.QLabel("Preview runs when not started. Close other camera apps if blank.")
         hint.setStyleSheet("color:#888;font-size:11px")
         ph = QtWidgets.QHBoxLayout()
@@ -181,11 +205,50 @@ class MainWindow(QtWidgets.QMainWindow):
         ph.addWidget(self.previewStartBtn)
         ph.addWidget(self.previewStopBtn)
         ph.addStretch(1)
-        pv.addWidget(self.previewLabel, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        pv.addWidget(self.previewLabel, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
         pv.addLayout(ph)
         pv.addWidget(hint)
         self.previewGroup.setLayout(pv)
-        runLayout.addWidget(self.previewGroup)
+
+        # Music controls beside preview (horizontal volume full-width)
+        self.musicCtrlGroup = QtWidgets.QGroupBox("Music Controls")
+        mc = QtWidgets.QVBoxLayout()
+        mc.setContentsMargins(8, 8, 8, 8)
+        mc.setSpacing(8)
+        # Keep nowPlaying attribute for compatibility, but don't show it
+        self.nowPlaying = QtWidgets.QLabel("-")
+        self.nowPlaying.setVisible(False)
+        # Volume label + full-width horizontal slider
+        volLabel = QtWidgets.QLabel("Volume")
+        try:
+            volLabel.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
+        except Exception:
+            pass
+        mc.addWidget(volLabel)
+        self.volumeSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.volumeSlider.setRange(0, 100)
+        self.volumeSlider.setValue(100)
+        try:
+            self.volumeSlider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        except AttributeError:
+            self.volumeSlider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.volumeSlider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.volumeSlider.setMinimumHeight(24)
+        mc.addWidget(self.volumeSlider)
+        # Pause/Play aligned right under the slider
+        row = QtWidgets.QHBoxLayout()
+        row.addStretch(1)
+        self.pausePlayBtn = QtWidgets.QPushButton("Pause")
+        self.pausePlayBtn.setMinimumWidth(80)
+        row.addWidget(self.pausePlayBtn)
+        mc.addLayout(row)
+        self.musicCtrlGroup.setLayout(mc)
+        self.musicCtrlGroup.setSizePolicy(pol_exp, pol_exp)
+
+        previewMusicRow = QtWidgets.QHBoxLayout()
+        previewMusicRow.addWidget(self.previewGroup, 3)
+        previewMusicRow.addWidget(self.musicCtrlGroup, 1)
+        runLayout.addLayout(previewMusicRow)
 
         # Music mode
         self.musicMode = QtWidgets.QComboBox()
@@ -213,6 +276,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spAngry = QtWidgets.QLineEdit()
         self.spNeutral = QtWidgets.QLineEdit()
         self.spFear = QtWidgets.QLineEdit()
+        self.spDisgust = QtWidgets.QLineEdit()
+        self.spSurprise = QtWidgets.QLineEdit()
 
         self.spGroup = QtWidgets.QGroupBox("Spotify settings")
         spForm = QtWidgets.QFormLayout()
@@ -225,6 +290,8 @@ class MainWindow(QtWidgets.QMainWindow):
         spForm.addRow("URI angry", self.spAngry)
         spForm.addRow("URI neutral", self.spNeutral)
         spForm.addRow("URI fear", self.spFear)
+        spForm.addRow("URI disgust", self.spDisgust)
+        spForm.addRow("URI surprise", self.spSurprise)
         self.spGroup.setLayout(spForm)
         form.addRow(self.spGroup)
 
@@ -234,14 +301,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.runUseModel = QtWidgets.QCheckBox("Use custom model")
         mf.addRow(self.runUseModel)
         mh = QtWidgets.QHBoxLayout()
-        self.runModelPath = QtWidgets.QLineEdit(os.path.join(ROOT, "custom_emotions.pkl"))
+        self.runModelCombo = QtWidgets.QComboBox()
+        self.runModelCombo.setEditable(True)
+        try:
+            adj_pol = QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        except AttributeError:  # PySide6 fallback
+            adj_pol = QtWidgets.QComboBox.AdjustToContents
+        self.runModelCombo.setSizeAdjustPolicy(adj_pol)
+        self._refresh_model_choices(os.path.join(ROOT, "custom_emotions.pkl"))
         self.runPickModelBtn = QtWidgets.QPushButton("Pick…")
-        mh.addWidget(self.runModelPath, 1)
+        mh.addWidget(self.runModelCombo, 1)
         mh.addWidget(self.runPickModelBtn)
         mw = QtWidgets.QWidget(); mw.setLayout(mh)
         mf.addRow("Model file", mw)
         modelGrp.setLayout(mf)
-        runLayout.addWidget(modelGrp)
 
         # Detection options on Run tab
         detectGrp = QtWidgets.QGroupBox("Detection")
@@ -255,7 +328,11 @@ class MainWindow(QtWidgets.QMainWindow):
         df.addRow("Emotion engine", self.engineCombo)
         df.addRow("Detector backend", self.detectorCombo)
         detectGrp.setLayout(df)
-        runLayout.addWidget(detectGrp)
+
+        modelDetectRow = QtWidgets.QHBoxLayout()
+        modelDetectRow.addWidget(modelGrp, 1)
+        modelDetectRow.addWidget(detectGrp, 1)
+        runLayout.addLayout(modelDetectRow)
 
         # Buttons row
         btns = QtWidgets.QHBoxLayout()
@@ -329,7 +406,9 @@ class MainWindow(QtWidgets.QMainWindow):
         tform.addRow("Auto optimize", asw)
         # Capture row
         capLayout = QtWidgets.QGridLayout()
-        self._counts = {k: QtWidgets.QLabel("0") for k in ["happy","sad","angry","neutral","fear"]}
+        self._counts = {k: QtWidgets.QLabel("0") for k in [
+            "happy","sad","angry","neutral","fear","disgust","surprise"
+        ]}
         self._capBtns = {}
         self._clrBtns = {}
         def mk_row(row: int, label: str):
@@ -344,7 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
             capLayout.addWidget(clr, row, 3)
             self._capBtns[label] = btn
             self._clrBtns[label] = clr
-        for i, lab in enumerate(["happy","sad","angry","neutral","fear"]):
+        for i, lab in enumerate(["happy","sad","angry","neutral","fear","disgust","surprise"]):
             mk_row(i, lab)
         capw = QtWidgets.QWidget(); capw.setLayout(capLayout)
         tform.addRow("Capture", capw)
@@ -372,23 +451,6 @@ class MainWindow(QtWidgets.QMainWindow):
         tform.addRow("Last capture", self.lastPreview)
         trainGroup.setLayout(tform)
         trainLayout.addWidget(trainGroup)
-
-        # Music controls
-        self.musicCtrlGroup = QtWidgets.QGroupBox("Music Controls")
-        mc = QtWidgets.QGridLayout()
-        self.nowPlaying = QtWidgets.QLabel("Now Playing: -")
-        self.nowPlaying.setStyleSheet("font-weight:500")
-        self.volumeSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.volumeSlider.setRange(0, 100)
-        self.volumeSlider.setValue(100)
-        self.pausePlayBtn = QtWidgets.QPushButton("Pause")
-        mc.addWidget(QtWidgets.QLabel("Now Playing:"), 0, 0)
-        mc.addWidget(self.nowPlaying, 0, 1, 1, 2)
-        mc.addWidget(QtWidgets.QLabel("Volume"), 1, 0)
-        mc.addWidget(self.volumeSlider, 1, 1)
-        mc.addWidget(self.pausePlayBtn, 1, 2)
-        self.musicCtrlGroup.setLayout(mc)
-        runLayout.addWidget(self.musicCtrlGroup)
 
         # Status + log moved to Logs tab
         self.statusLabel = QtWidgets.QLabel("Status: stopped")
@@ -422,7 +484,12 @@ class MainWindow(QtWidgets.QMainWindow):
         def _pick_run_model():
             try:
                 self._browse_model_out_pick()
-                self.runModelPath.setText(self.modelOut.text())
+                path = self.modelOut.text().strip()
+                if path:
+                    abs_path = os.path.abspath(os.path.expanduser(path))
+                    self.modelOut.setText(abs_path)
+                    self._refresh_model_choices(abs_path)
+                    self.runModelCombo.setEditText(abs_path)
             except Exception:
                 pass
         self.runPickModelBtn.clicked.connect(_pick_run_model)
@@ -446,20 +513,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._previewCap = None
         self.previewStartBtn.clicked.connect(self._start_idle_preview)
         self.previewStopBtn.clicked.connect(self._stop_idle_preview)
+        # Start preview by default
+        self._start_idle_preview()
 
         # Music control wiring
         self._paused = False
         self.pausePlayBtn.clicked.connect(self._toggle_pause_play)
         self.volumeSlider.valueChanged.connect(self._on_volume_changed)
-
-        # Restore persisted settings after widgets exist
-        try:
-            self._load_settings()
-        except Exception as e:
-            self._append(f"[desktop] Failed to load settings: {e}")
-
-        # Start preview by default (uses restored camera index)
-        self._start_idle_preview()
 
     # UI helpers
     def _append(self, s: str):
@@ -574,6 +634,50 @@ class MainWindow(QtWidgets.QMainWindow):
             elif current:
                 self.serialPort.setEditText(current)
 
+    def _refresh_model_choices(self, ensure: Optional[str] = None):
+        """Populate the run-tab model dropdown with discovered model files."""
+        if not hasattr(self, "runModelCombo"):
+            return
+        try:
+            current = self.runModelCombo.currentText().strip()
+        except Exception:
+            current = ""
+
+        def _add(path: Optional[str], bucket: List[str]):
+            if not path:
+                return
+            norm = os.path.abspath(os.path.expanduser(path))
+            if norm not in bucket:
+                bucket.append(norm)
+
+        choices: List[str] = []
+        _add(ensure, choices)
+        _add(current, choices)
+        if hasattr(self, "modelOut"):
+            try:
+                _add(self.modelOut.text().strip(), choices)
+            except Exception:
+                pass
+        for pattern in ("custom_emotions*.pkl", "*.pkl", "*.joblib"):
+            for path in glob.glob(os.path.join(ROOT, pattern)):
+                _add(path, choices)
+
+        combo = self.runModelCombo
+        try:
+            combo.blockSignals(True)
+        except Exception:
+            pass
+        combo.clear()
+        for path in choices:
+            combo.addItem(path)
+        target = ensure or current or (choices[0] if choices else "")
+        if target:
+            combo.setEditText(os.path.abspath(os.path.expanduser(target)))
+        try:
+            combo.blockSignals(False)
+        except Exception:
+            pass
+
     def _toggle_music_mode(self, text: str):
         is_spotify = text.lower() == "spotify"
         # Show/hide sections for Local vs Spotify
@@ -595,7 +699,8 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         for w in (self.spDevice, self.spId, self.spSecret, self.spRedirect,
-                  self.spHappy, self.spSad, self.spAngry, self.spNeutral, self.spFear):
+                  self.spHappy, self.spSad, self.spAngry, self.spNeutral, self.spFear,
+                  self.spDisgust, self.spSurprise):
             try:
                 w.setEnabled(is_spotify)
             except Exception:
@@ -694,7 +799,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_counts()
 
     def _clear_all_labels(self):
-        for lab in ["happy","sad","angry","neutral","fear"]:
+        for lab in ["happy","sad","angry","neutral","fear","disgust","surprise"]:
             self._clear_label(lab)
 
     def _preview_dataset(self):
@@ -720,7 +825,7 @@ class MainWindow(QtWidgets.QMainWindow):
         v.addWidget(scroll, 1)
 
         root = self.dsRoot.text().strip()
-        labels = ["happy","sad","angry","neutral","fear"]
+        labels = ["happy","sad","angry","neutral","fear","disgust","surprise"]
 
         def load_grid():
             # Clear previous
@@ -799,6 +904,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._append(f"[training] Training finished with code {rc}")
                 if rc == 0 and self.useCustomModel.isChecked():
                     self._append(f"[training] Model ready: {model_out}")
+                try:
+                    self._refresh_model_choices(self.modelOut.text())
+                except Exception:
+                    pass
                 # Re-enable UI and clear refs
                 self._set_training_ui(False)
                 try:
@@ -843,6 +952,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.display, self.cameraIndex, self.minInterval, self.pauseNoFace,
             self.musicMode, self.musicDir, self.spDevice, self.spId, self.spSecret,
             self.spRedirect, self.spHappy, self.spSad, self.spAngry, self.spNeutral, self.spFear,
+            self.spDisgust, self.spSurprise,
+            self.runUseModel, self.runModelCombo, self.runPickModelBtn,
             self.dsRoot, self.modelOut, self.embModel, self.algCombo, self.trainBtn, self.engineCombo, self.detectorCombo,
         ):
             try:
@@ -893,9 +1004,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             if hasattr(self, "runUseModel") and self.runUseModel.isChecked():
                 self.useCustomModel.setChecked(True)
-                rp = self.runModelPath.text().strip()
+                rp = self.runModelCombo.currentText().strip()
                 if rp:
-                    self.modelOut.setText(os.path.abspath(os.path.expanduser(rp)))
+                    abs_path = os.path.abspath(os.path.expanduser(rp))
+                    self.runModelCombo.setEditText(abs_path)
+                    self.modelOut.setText(abs_path)
+                    self._refresh_model_choices(abs_path)
         except Exception:
             pass
         # Basic validation
@@ -944,7 +1058,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 ru = self.spRedirect.text().strip()
                 args += ["--spotify-redirect-uri", ru]
                 self._append(f"[desktop] Using Spotify redirect: {ru}")
-            for key, widget in ("happy", self.spHappy), ("sad", self.spSad), ("angry", self.spAngry), ("neutral", self.spNeutral), ("fear", self.spFear):
+            for key, widget in (
+                ("happy", self.spHappy),
+                ("sad", self.spSad),
+                ("angry", self.spAngry),
+                ("neutral", self.spNeutral),
+                ("fear", self.spFear),
+                ("disgust", self.spDisgust),
+                ("surprise", self.spSurprise),
+            ):
                 val = widget.text().strip()
                 if val:
                     args += [f"--sp-{key}", val]
@@ -1198,6 +1320,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spAngry.setText(str(get("spotify/uri_angry", "")))
         self.spNeutral.setText(str(get("spotify/uri_neutral", "")))
         self.spFear.setText(str(get("spotify/uri_fear", "")))
+        self.spDisgust.setText(str(get("spotify/uri_disgust", "")))
+        self.spSurprise.setText(str(get("spotify/uri_surprise", "")))
+        run_model_value = str(get("run/model_file", self.runModelCombo.currentText()))
+        if run_model_value:
+            self._refresh_model_choices(run_model_value)
+        try:
+            self.runUseModel.setChecked(bool(get("run/use_model", self.runUseModel.isChecked())))
+        except Exception:
+            pass
         # training
         self.dsRoot.setText(str(get("train/dataset", self.dsRoot.text())))
         self.modelOut.setText(str(get("train/model_out", self.modelOut.text())))
@@ -1232,6 +1363,10 @@ class MainWindow(QtWidgets.QMainWindow):
         s.setValue("spotify/uri_angry", self.spAngry.text())
         s.setValue("spotify/uri_neutral", self.spNeutral.text())
         s.setValue("spotify/uri_fear", self.spFear.text())
+        s.setValue("spotify/uri_disgust", self.spDisgust.text())
+        s.setValue("spotify/uri_surprise", self.spSurprise.text())
+        s.setValue("run/model_file", self.runModelCombo.currentText())
+        s.setValue("run/use_model", self.runUseModel.isChecked())
         # training
         s.setValue("train/dataset", self.dsRoot.text())
         s.setValue("train/model_out", self.modelOut.text())

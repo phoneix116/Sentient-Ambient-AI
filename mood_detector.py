@@ -18,8 +18,8 @@ Usage:
 
 Notes:
 - DeepFace will download models on first run; allow some time.
-- We remap DeepFace's 'disgust' -> 'angry' and 'surprise' -> 'happy' to fit
-  the actuator's defined responses.
+- Supports the full DeepFace emotion set (happy, sad, angry, neutral, fear,
+    disgust, surprise).
 """
 
 import os
@@ -66,7 +66,7 @@ except Exception as e:  # pragma: no cover
     ) from e
 
 # Canonical set of emotions the actuator supports
-CANON_EMOTIONS = {"happy", "sad", "angry", "neutral", "fear"}
+CANON_EMOTIONS = {"happy", "sad", "angry", "neutral", "fear", "disgust", "surprise"}
 
 # Map DeepFace raw emotions to our canonical set
 RAW_TO_CANON = {
@@ -75,9 +75,8 @@ RAW_TO_CANON = {
     "angry": "angry",
     "neutral": "neutral",
     "fear": "fear",  # used as proxy for stress
-    # map extras to the closest effect we support
-    "disgust": "angry",
-    "surprise": "happy",
+    "disgust": "disgust",
+    "surprise": "surprise",
 }
 
 
@@ -130,6 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sp-angry", default=os.getenv("SP_ANGRY"))
     parser.add_argument("--sp-neutral", default=os.getenv("SP_NEUTRAL"))
     parser.add_argument("--sp-fear", default=os.getenv("SP_FEAR"))
+    parser.add_argument("--sp-disgust", default=os.getenv("SP_DISGUST"))
+    parser.add_argument("--sp-surprise", default=os.getenv("SP_SURPRISE"))
     # Serial controls (cable-only mode)
     parser.add_argument("--serial-port", default=None, help="Serial device for ESP32 (e.g., /dev/cu.SLAB_USBtoUART)")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default 115200)")
@@ -445,8 +446,8 @@ class SerialManager:
 class MusicManager:
     """Simple local music player with fade out/in using pygame.mixer.
 
-    Expects files in music_dir with names like:
-      0001_happy.mp3, 0002_sad.mp3, 0003_angry.mp3, 0004_neutral.mp3, 0005_fear.mp3
+        Expects files in music_dir with names like:
+            0001_happy.mp3 … 0007_surprise.mp3 (one per supported emotion)
     """
 
     def __init__(self, music_dir: str, fade_ms: int = 800):
@@ -461,6 +462,8 @@ class MusicManager:
             "angry": "0003_angry.mp3",
             "neutral": "0004_neutral.mp3",
             "fear": "0005_fear.mp3",
+            "disgust": "0006_disgust.mp3",
+            "surprise": "0007_surprise.mp3",
         }
         try:
             import pygame  # type: ignore
@@ -820,6 +823,8 @@ def main():
                 "angry": args.sp_angry,
                 "neutral": args.sp_neutral,
                 "fear": args.sp_fear,
+                "disgust": args.sp_disgust,
+                "surprise": args.sp_surprise,
             }
             cred = {
                 "client_id": args.spotify_client_id,
@@ -893,7 +898,6 @@ def main():
     control_last_mtime = 0.0
 
     def analysis_worker():
-        nonlocal analysis_frames
         while not stop_event.is_set():
             try:
                 frame = frame_queue.get(timeout=0.2)
