@@ -33,13 +33,34 @@ import base64
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
-# Optional Spotify import for preflight auth
-try:
-    import spotipy  # type: ignore
-    from spotipy.oauth2 import SpotifyOAuth  # type: ignore
-except Exception:
-    spotipy = None
-    SpotifyOAuth = None
+# Lazy Spotify import to avoid urllib3 LibreSSL warnings at startup
+spotipy = None  # type: ignore
+SpotifyOAuth = None  # type: ignore
+def _lazy_import_spotify() -> bool:
+    """Import spotipy only when needed and silence urllib3's NotOpenSSLWarning.
+
+    Returns True if import succeeded, False otherwise.
+    """
+    import warnings
+    try:
+        from urllib3.exceptions import NotOpenSSLWarning  # type: ignore
+        warnings.simplefilter("ignore", NotOpenSSLWarning)
+    except Exception:
+        # If urllib3 isn't present yet, or API changed, ignore quietly
+        pass
+    global spotipy, SpotifyOAuth
+    if SpotifyOAuth is not None:
+        return True
+    try:  # Lazy optional import
+        import spotipy as _sp  # type: ignore
+        from spotipy.oauth2 import SpotifyOAuth as _OAuth  # type: ignore
+        spotipy = _sp
+        SpotifyOAuth = _OAuth
+        return True
+    except Exception:
+        spotipy = None
+        SpotifyOAuth = None
+        return False
 
 # Prefer PyQt6 (fewer install issues on macOS), fall back to PySide6. Unify Signal and echo mode.
 try:
@@ -262,7 +283,7 @@ class MainWindow(QtWidgets.QMainWindow):
             fg0 = "#E6EDF3"; fg1 = "#C2CAD3"; subtle = "#9AA5B1"; border = "#2B354A"
             self.setStyleSheet(
                 f"""
-                QWidget {{ background: {bg1}; color: {fg0}; font-family: 'Segoe UI', 'Inter', sans-serif; font-size: 12.5px; }}
+                QWidget {{ background: {bg1}; color: {fg0}; font-family: -apple-system, 'SF Pro Text', 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 12.5px; }}
                 QGroupBox {{ border: 1px solid {border}; border-radius: 8px; margin-top: 12px; background: {bg2}; }}
                 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {fg1}; }}
                 QPushButton {{ background: {bg3}; color: {fg0}; border: 1px solid {border}; border-radius: 6px; padding: 6px 10px; }}
@@ -695,39 +716,39 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self.log(f"[report] PNG export failed: {e}")
 
-        def _build_report_html(self, embed_chart: bool = True) -> str:
-                """Build a self-contained HTML string for the current report.
+    def _build_report_html(self, embed_chart: bool = True) -> str:
+        """Build a self-contained HTML string for the current report.
 
-                embed_chart: when True and matplotlib is available, include a base64 PNG chart.
-                """
-                s = self.recorder.summary()
-                counts = s.get("counts", {})
-                durs = s.get("durations", {})
-                total = float(s.get("duration_sec", 0.0)) or 0.0
-                started = s.get("started", "-")
-                ended = s.get("ended", "-")
-                # Table rows
-                emos = SessionRecorder.EMOTIONS
-                rows = []
-                for emo in emos:
-                        cnt = int(counts.get(emo, 0))
-                        dur = float(durs.get(emo, 0.0))
-                        pct = 0.0 if total <= 0 else (100.0 * dur / total)
-                        bar = f"<div style='background:#2b2b2b;width:100%;height:10px;border-radius:6px;overflow:hidden'><div style='background:#00C2A8;height:10px;width:{pct:.1f}%;'></div></div>"
-                        rows.append(f"<tr><td>{emo}</td><td style='text-align:right'>{cnt}</td><td style='text-align:right'>{dur:.1f}s</td><td style='text-align:right'>{pct:.1f}%</td><td>{bar}</td></tr>")
-                # Optional embedded chart image from matplotlib
+        embed_chart: when True and matplotlib is available, include a base64 PNG chart.
+        """
+        s = self.recorder.summary()
+        counts = s.get("counts", {})
+        durs = s.get("durations", {})
+        total = float(s.get("duration_sec", 0.0)) or 0.0
+        started = s.get("started", "-")
+        ended = s.get("ended", "-")
+        # Table rows
+        emos = SessionRecorder.EMOTIONS
+        rows = []
+        for emo in emos:
+            cnt = int(counts.get(emo, 0))
+            dur = float(durs.get(emo, 0.0))
+            pct = 0.0 if total <= 0 else (100.0 * dur / total)
+            bar = f"<div style='background:#2b2b2b;width:100%;height:10px;border-radius:6px;overflow:hidden'><div style='background:#00C2A8;height:10px;width:{pct:.1f}%;'></div></div>"
+            rows.append(f"<tr><td>{emo}</td><td style='text-align:right'>{cnt}</td><td style='text-align:right'>{dur:.1f}s</td><td style='text-align:right'>{pct:.1f}%</td><td>{bar}</td></tr>")
+        # Optional embedded chart image from matplotlib
+        img_data = ""
+        if embed_chart and HAS_MPL:
+            try:
+                buf = io.BytesIO()
+                self._fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+                buf.seek(0)
+                b64 = base64.b64encode(buf.read()).decode("ascii")
+                img_data = f"<img alt='Report chart' style='max-width:100%;border:1px solid #2b2b2b;border-radius:8px' src='data:image/png;base64,{b64}'/>"
+            except Exception:
                 img_data = ""
-                if embed_chart and HAS_MPL:
-                        try:
-                                buf = io.BytesIO()
-                                self._fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-                                buf.seek(0)
-                                b64 = base64.b64encode(buf.read()).decode("ascii")
-                                img_data = f"<img alt='Report chart' style='max-width:100%;border:1px solid #2b2b2b;border-radius:8px' src='data:image/png;base64,{b64}'/>"
-                        except Exception:
-                                img_data = ""
-                chart_html = ("<div class='card'><h2>Charts</h2>" + img_data + "</div>") if img_data else ""
-                html = f"""
+        chart_html = ("<div class='card'><h2>Charts</h2>" + img_data + "</div>") if img_data else ""
+        html = f"""
 <!doctype html>
 <html><head><meta charset='utf-8'/>
 <title>Moodify Session Report</title>
@@ -747,37 +768,37 @@ class MainWindow(QtWidgets.QMainWindow):
  a.button{{display:inline-block;background:#00C2A8;color:#061116;text-decoration:none;padding:8px 12px;border-radius:6px}}
  </style></head>
 <body><div class='container'>
-    <h1>Moodify Session Report</h1>
-    <div class='meta'>Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {total:.1f}s</div>
-    <div class='kpis'>
-        <div class='kpi'><div class='v'>{total:.1f}s</div><div class='t'>Duration</div></div>
-        <div class='kpi'><div class='v'>{int(s.get('changes',0))}</div><div class='t'>Emotion changes</div></div>
-        <div class='kpi'><div class='v'>{int(s.get('plays',0))}</div><div class='t'>Songs played</div></div>
-        <div class='kpi'><div class='v'>{s.get('top_emotion','-')}</div><div class='t'>Top emotion</div></div>
-    </div>
-    <div class='card'>
-        <h2>Summary</h2>
-        <table><thead><tr><th>Emotion</th><th style='text-align:right'>Changes</th><th style='text-align:right'>Time</th><th style='text-align:right'>Share</th><th>Distribution</th></tr></thead>
-        <tbody>{''.join(rows) if rows else '<tr><td colspan=4 class="small">No data.</td></tr>'}</tbody></table>
-    </div>
-        {chart_html}
-    <div class='small'>Generated by Moodify Desktop</div>
+  <h1>Moodify Session Report</h1>
+  <div class='meta'>Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {total:.1f}s</div>
+  <div class='kpis'>
+    <div class='kpi'><div class='v'>{total:.1f}s</div><div class='t'>Duration</div></div>
+    <div class='kpi'><div class='v'>{int(s.get('changes',0))}</div><div class='t'>Emotion changes</div></div>
+    <div class='kpi'><div class='v'>{int(s.get('plays',0))}</div><div class='t'>Songs played</div></div>
+    <div class='kpi'><div class='v'>{s.get('top_emotion','-')}</div><div class='t'>Top emotion</div></div>
+  </div>
+  <div class='card'>
+    <h2>Summary</h2>
+    <table><thead><tr><th>Emotion</th><th style='text-align:right'>Changes</th><th style='text-align:right'>Time</th><th style='text-align:right'>Share</th><th>Distribution</th></tr></thead>
+    <tbody>{''.join(rows) if rows else '<tr><td colspan=4 class="small">No data.</td></tr>'}</tbody></table>
+  </div>
+    {chart_html}
+  <div class='small'>Generated by Moodify Desktop</div>
 </div></body></html>
 """
-                return html
+        return html
 
-        def _export_report_html(self):
-                """Export a self-contained HTML report with summary, table, and optional embedded chart image."""
-                try:
-                        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export HTML", os.path.join(ROOT, "session_report.html"), "HTML (*.html)")
-                        if not path:
-                                return
-                        html = self._build_report_html(embed_chart=True)
-                        with open(path, "w", encoding="utf-8") as f:
-                                f.write(html)
-                        self.log(f"[report] HTML exported: {path}")
-                except Exception as e:
-                        self.log(f"[report] HTML export failed: {e}")
+    def _export_report_html(self):
+        """Export a self-contained HTML report with summary, table, and optional embedded chart image."""
+        try:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export HTML", os.path.join(ROOT, "session_report.html"), "HTML (*.html)")
+            if not path:
+                return
+            html = self._build_report_html(embed_chart=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            self.log(f"[report] HTML exported: {path}")
+        except Exception as e:
+            self.log(f"[report] HTML export failed: {e}")
 
     def _reset_session(self):
         try:
@@ -1148,7 +1169,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.log(f"[desktop] Serial TEST failed: {e}")
 
     def _spotify_auth(self):
-        if SpotifyOAuth is None: self._warn("Spotify", "spotipy is not installed in this environment."); return
+        if not _lazy_import_spotify():
+            self._warn("Spotify", "spotipy is not installed in this environment."); return
         if not (cid := self.spId.text().strip()) or not (secret := self.spSecret.text().strip()) or not (redirect := self.spRedirect.text().strip()):
             self._warn("Spotify", "Please fill Client ID, Client Secret, and Redirect URI."); return
         try:
