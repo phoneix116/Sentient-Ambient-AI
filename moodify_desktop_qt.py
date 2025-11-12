@@ -467,7 +467,20 @@ class MainWindow(QtWidgets.QMainWindow):
         metaGroup = QtWidgets.QGroupBox("Session Info"); metaForm = QtWidgets.QFormLayout(metaGroup)
         self.repStartLbl = QtWidgets.QLabel("-"); self.repEndLbl = QtWidgets.QLabel("-"); self.repEngineLbl = QtWidgets.QLabel("-"); self.repDetectorLbl = QtWidgets.QLabel("-"); self.repModelLbl = QtWidgets.QLabel("-"); self.repMusicModeLbl = QtWidgets.QLabel("-")
         metaForm.addRow("Started:", self.repStartLbl); metaForm.addRow("Ended:", self.repEndLbl); metaForm.addRow("Engine:", self.repEngineLbl); metaForm.addRow("Detector:", self.repDetectorLbl); metaForm.addRow("Model:", self.repModelLbl); metaForm.addRow("Music Mode:", self.repMusicModeLbl)
-        repDetails.addWidget(metaGroup); repMain.addLayout(repDetails, 1); reportLayout.addLayout(repMain)
+        repDetails.addWidget(metaGroup)
+        # Live HTML preview (lightweight, no external deps)
+        htmlGroup = QtWidgets.QGroupBox("Live HTML Preview")
+        htmlLayout = QtWidgets.QVBoxLayout(htmlGroup)
+        self.repHtmlLive = QtWidgets.QCheckBox("Update automatically")
+        self.repHtmlLive.setChecked(True)
+        self.repHtmlView = QtWidgets.QTextBrowser()
+        self.repHtmlView.setOpenExternalLinks(True)
+        self.repHtmlView.setMinimumHeight(220)
+        htmlLayout.addWidget(self.repHtmlLive, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        htmlLayout.addWidget(self.repHtmlView)
+        repDetails.addWidget(htmlGroup)
+        repMain.addLayout(repDetails, 1)
+        reportLayout.addLayout(repMain)
         repButtons = QtWidgets.QHBoxLayout(); self.repExportCsv = QtWidgets.QPushButton("Export CSV"); self.repExportJson = QtWidgets.QPushButton("Export JSON"); self.repExportPng = QtWidgets.QPushButton("Export Chart PNG"); self.repExportHtml = QtWidgets.QPushButton("Export HTML"); self.repReset = QtWidgets.QPushButton("Reset Session Data"); self.repReset.setObjectName("Ghost")
         repButtons.addStretch(1); repButtons.addWidget(self.repExportCsv); repButtons.addWidget(self.repExportJson); repButtons.addWidget(self.repExportPng); repButtons.addWidget(self.repExportHtml); repButtons.addStretch(1); repButtons.addWidget(self.repReset); reportLayout.addLayout(repButtons)
 
@@ -642,6 +655,14 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._ax1.set_title("Stable emotion over time")
                 self._fig.tight_layout()
                 self._canvas.draw_idle()
+            # Update live HTML preview (lightweight: omit chart image for performance)
+            if getattr(self, "repHtmlLive", None) and self.repHtmlLive.isChecked():
+                try:
+                    html = self._build_report_html(embed_chart=False)
+                    # QTextBrowser expects a full HTML doc; our builder returns that
+                    self.repHtmlView.setHtml(html)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -674,41 +695,39 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self.log(f"[report] PNG export failed: {e}")
 
-    def _export_report_html(self):
-        """Export a self-contained HTML report with summary, table, and optional embedded chart image."""
-        try:
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export HTML", os.path.join(ROOT, "session_report.html"), "HTML (*.html)")
-            if not path:
-                return
-            s = self.recorder.summary()
-            counts = s.get("counts", {})
-            durs = s.get("durations", {})
-            total = float(s.get("duration_sec", 0.0)) or 0.0
-            started = s.get("started", "-")
-            ended = s.get("ended", "-")
-            # Table rows
-            emos = SessionRecorder.EMOTIONS
-            rows = []
-            for emo in emos:
-                cnt = int(counts.get(emo, 0))
-                dur = float(durs.get(emo, 0.0))
-                pct = 0.0 if total <= 0 else (100.0 * dur / total)
-                bar = f"<div style='background:#2b2b2b;width:100%;height:10px;border-radius:6px;overflow:hidden'><div style='background:#00C2A8;height:10px;width:{pct:.1f}%;'></div></div>"
-                rows.append(f"<tr><td>{emo}</td><td style='text-align:right'>{cnt}</td><td style='text-align:right'>{dur:.1f}s</td><td style='text-align:right'>{pct:.1f}%</td><td>{bar}</td></tr>")
-            # Optional embedded chart image from matplotlib
-            img_data = ""
-            if HAS_MPL:
-                try:
-                    buf = io.BytesIO()
-                    self._fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-                    buf.seek(0)
-                    b64 = base64.b64encode(buf.read()).decode("ascii")
-                    img_data = f"<img alt='Report chart' style='max-width:100%;border:1px solid #2b2b2b;border-radius:8px' src='data:image/png;base64,{b64}'/>"
-                except Exception:
-                    img_data = ""
-            # Precompute optional chart section to avoid backslashes inside f-string expressions
-            chart_html = ("<div class='card'><h2>Charts</h2>" + img_data + "</div>") if img_data else ""
-            html = f"""
+        def _build_report_html(self, embed_chart: bool = True) -> str:
+                """Build a self-contained HTML string for the current report.
+
+                embed_chart: when True and matplotlib is available, include a base64 PNG chart.
+                """
+                s = self.recorder.summary()
+                counts = s.get("counts", {})
+                durs = s.get("durations", {})
+                total = float(s.get("duration_sec", 0.0)) or 0.0
+                started = s.get("started", "-")
+                ended = s.get("ended", "-")
+                # Table rows
+                emos = SessionRecorder.EMOTIONS
+                rows = []
+                for emo in emos:
+                        cnt = int(counts.get(emo, 0))
+                        dur = float(durs.get(emo, 0.0))
+                        pct = 0.0 if total <= 0 else (100.0 * dur / total)
+                        bar = f"<div style='background:#2b2b2b;width:100%;height:10px;border-radius:6px;overflow:hidden'><div style='background:#00C2A8;height:10px;width:{pct:.1f}%;'></div></div>"
+                        rows.append(f"<tr><td>{emo}</td><td style='text-align:right'>{cnt}</td><td style='text-align:right'>{dur:.1f}s</td><td style='text-align:right'>{pct:.1f}%</td><td>{bar}</td></tr>")
+                # Optional embedded chart image from matplotlib
+                img_data = ""
+                if embed_chart and HAS_MPL:
+                        try:
+                                buf = io.BytesIO()
+                                self._fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+                                buf.seek(0)
+                                b64 = base64.b64encode(buf.read()).decode("ascii")
+                                img_data = f"<img alt='Report chart' style='max-width:100%;border:1px solid #2b2b2b;border-radius:8px' src='data:image/png;base64,{b64}'/>"
+                        except Exception:
+                                img_data = ""
+                chart_html = ("<div class='card'><h2>Charts</h2>" + img_data + "</div>") if img_data else ""
+                html = f"""
 <!doctype html>
 <html><head><meta charset='utf-8'/>
 <title>Moodify Session Report</title>
@@ -728,28 +747,37 @@ class MainWindow(QtWidgets.QMainWindow):
  a.button{{display:inline-block;background:#00C2A8;color:#061116;text-decoration:none;padding:8px 12px;border-radius:6px}}
  </style></head>
 <body><div class='container'>
-  <h1>Moodify Session Report</h1>
-  <div class='meta'>Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {total:.1f}s</div>
-  <div class='kpis'>
-    <div class='kpi'><div class='v'>{total:.1f}s</div><div class='t'>Duration</div></div>
-    <div class='kpi'><div class='v'>{int(s.get('changes',0))}</div><div class='t'>Emotion changes</div></div>
-    <div class='kpi'><div class='v'>{int(s.get('plays',0))}</div><div class='t'>Songs played</div></div>
-    <div class='kpi'><div class='v'>{s.get('top_emotion','-')}</div><div class='t'>Top emotion</div></div>
-  </div>
-  <div class='card'>
-    <h2>Summary</h2>
-    <table><thead><tr><th>Emotion</th><th style='text-align:right'>Changes</th><th style='text-align:right'>Time</th><th style='text-align:right'>Share</th><th>Distribution</th></tr></thead>
-    <tbody>{''.join(rows) if rows else '<tr><td colspan=4 class="small">No data.</td></tr>'}</tbody></table>
-  </div>
-    {chart_html}
-  <div class='small'>Generated by Moodify Desktop</div>
+    <h1>Moodify Session Report</h1>
+    <div class='meta'>Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {total:.1f}s</div>
+    <div class='kpis'>
+        <div class='kpi'><div class='v'>{total:.1f}s</div><div class='t'>Duration</div></div>
+        <div class='kpi'><div class='v'>{int(s.get('changes',0))}</div><div class='t'>Emotion changes</div></div>
+        <div class='kpi'><div class='v'>{int(s.get('plays',0))}</div><div class='t'>Songs played</div></div>
+        <div class='kpi'><div class='v'>{s.get('top_emotion','-')}</div><div class='t'>Top emotion</div></div>
+    </div>
+    <div class='card'>
+        <h2>Summary</h2>
+        <table><thead><tr><th>Emotion</th><th style='text-align:right'>Changes</th><th style='text-align:right'>Time</th><th style='text-align:right'>Share</th><th>Distribution</th></tr></thead>
+        <tbody>{''.join(rows) if rows else '<tr><td colspan=4 class="small">No data.</td></tr>'}</tbody></table>
+    </div>
+        {chart_html}
+    <div class='small'>Generated by Moodify Desktop</div>
 </div></body></html>
 """
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(html)
-            self.log(f"[report] HTML exported: {path}")
-        except Exception as e:
-            self.log(f"[report] HTML export failed: {e}")
+                return html
+
+        def _export_report_html(self):
+                """Export a self-contained HTML report with summary, table, and optional embedded chart image."""
+                try:
+                        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export HTML", os.path.join(ROOT, "session_report.html"), "HTML (*.html)")
+                        if not path:
+                                return
+                        html = self._build_report_html(embed_chart=True)
+                        with open(path, "w", encoding="utf-8") as f:
+                                f.write(html)
+                        self.log(f"[report] HTML exported: {path}")
+                except Exception as e:
+                        self.log(f"[report] HTML export failed: {e}")
 
     def _reset_session(self):
         try:
