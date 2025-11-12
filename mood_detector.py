@@ -95,12 +95,18 @@ def parse_args() -> argparse.Namespace:
         "--majority-frac",
         type=float,
         default=0.5,
-        help="Required fraction for a winner within the buffer. Default 0.5 means strict majority (>50%).",
+        help="Required fraction for a winner within the buffer. Default 0.5 means strict majority (>50%%).",
     )
     parser.add_argument("--min-interval", type=float, default=1.0, help="Min seconds between HTTP sends")
     parser.add_argument("--display", action="store_true", help="Show preview window with overlay")
     parser.add_argument("--width", type=int, default=640, help="Camera width")
     parser.add_argument("--height", type=int, default=480, help="Camera height")
+    parser.add_argument(
+        "--video-backend",
+        choices=["auto", "default", "dshow", "msmf", "avfoundation", "v4l2"],
+        default=os.getenv("MOODIFY_VIDEO_BACKEND", "auto").lower(),
+        help="OpenCV video API backend to use for the webcam. 'auto' tries sensible fallbacks per OS (Windows: dshow→msmf→default).",
+    )
     parser.add_argument(
         "--no-face-behavior",
         choices=["neutral", "pause"],
@@ -846,16 +852,54 @@ def main():
         except Exception as e:
             print(f"Failed to open serial '{args.serial_port}': {e}")
 
-    def _open_camera_with_fallback(index: int, width: int, height: int):
-        """Try AVFoundation on macOS first, then default backend; scan indices if needed.
+    def _open_camera_with_fallback(index: int, width: int, height: int, video_backend: str):
+        """Open webcam with OS-aware backend priority and index scan.
 
         Returns (cap, used_index, used_backend, tried_list)
         where used_backend is a string label, and tried_list is a list of (idx, backend_label).
         """
+        import sys as _sys
+
         tried = []
-        avf = getattr(cv2, "CAP_AVFOUNDATION", None)
-        backends = [("AVFOUNDATION", avf)] if avf is not None else []
-        backends.append(("DEFAULT", None))
+
+        # Resolve OpenCV backend constants if present
+        _AVF = getattr(cv2, "CAP_AVFOUNDATION", None)
+        _DSHOW = getattr(cv2, "CAP_DSHOW", None)
+        _MSMF = getattr(cv2, "CAP_MSMF", None)
+        _V4L2 = getattr(cv2, "CAP_V4L2", None)
+
+        # Build priority list based on requested backend and OS
+        plat = _sys.platform
+        backends = []  # list of (label, apiPref or None)
+
+        vb = (video_backend or "auto").lower()
+        if vb == "default":
+            backends = [("DEFAULT", None)]
+        elif vb == "dshow" and _DSHOW is not None:
+            backends = [("DSHOW", _DSHOW)]
+        elif vb == "msmf" and _MSMF is not None:
+            backends = [("MSMF", _MSMF)]
+        elif vb == "avfoundation" and _AVF is not None:
+            backends = [("AVFOUNDATION", _AVF)]
+        elif vb == "v4l2" and _V4L2 is not None:
+            backends = [("V4L2", _V4L2)]
+        else:
+            # auto: choose sensible defaults per OS
+            if plat.startswith("win"):
+                # Prefer DirectShow on Windows, then MSMF, then default
+                if _DSHOW is not None:
+                    backends.append(("DSHOW", _DSHOW))
+                if _MSMF is not None:
+                    backends.append(("MSMF", _MSMF))
+                backends.append(("DEFAULT", None))
+            elif plat == "darwin":
+                if _AVF is not None:
+                    backends.append(("AVFOUNDATION", _AVF))
+                backends.append(("DEFAULT", None))
+            else:
+                if _V4L2 is not None:
+                    backends.append(("V4L2", _V4L2))
+                backends.append(("DEFAULT", None))
 
         indices = [index] + [i for i in range(0, 6) if i != index]
         for idx in indices:
@@ -863,8 +907,11 @@ def main():
                 cap = cv2.VideoCapture(idx, be) if be is not None else cv2.VideoCapture(idx)
                 if cap.isOpened():
                     # Try to set resolution and test a frame
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    try:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    except Exception:
+                        pass
                     ok, _ = cap.read()
                     if ok:
                         return cap, idx, label, tried
@@ -872,12 +919,20 @@ def main():
                 tried.append((idx, label))
         return None, None, None, tried
 
-    cap, used_idx, used_be, tried = _open_camera_with_fallback(args.camera_index, args.width, args.height)
+    cap, used_idx, used_be, tried = _open_camera_with_fallback(
+        args.camera_index, args.width, args.height, args.video_backend
+    )
     if cap is None:
         tried_str = ", ".join([f"idx {i} ({b})" for i, b in tried]) or "none"
         print(f"Error: Could not open webcam. Tried: {tried_str}.")
-        print("Hints: On macOS, grant camera permission to Python in System Settings → Privacy & Security → Camera,\n"
-              "close any app using the camera (Zoom/FaceTime), and try camera index 0.")
+        print(
+            "Hints: \n"
+            "- Close any other app using the camera (Teams/Zoom/Discord/Camera app).\n"
+            "- On Windows, try --video-backend dshow (DirectShow) or --video-backend msfm, and try --camera-index 0/1.\n"
+            "- On Windows, check Privacy → Camera permissions for Python.\n"
+            "- On macOS, grant camera permission in System Settings → Privacy & Security → Camera.\n"
+            "- If using Windows N edition, install the Media Feature Pack."
+        )
         return
     else:
         print(f"Camera opened: index {used_idx} via {used_be}")
