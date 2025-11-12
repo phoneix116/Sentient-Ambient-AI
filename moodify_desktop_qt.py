@@ -28,6 +28,8 @@ import shlex
 import glob
 import re
 import json
+import io
+import base64
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -151,8 +153,9 @@ class SessionRecorder:
             self.end_ts = time.time()
 
     # --- Parsing ---
-    _re_stable = re.compile(r"^New stable emotion:\s*(?P<emo>\w+)")
-    _re_play = re.compile(r"^Playing:\s*(?P<emo>\w+)\s*\((?P<file>[^\)]*)\)")
+    # Be liberal: allow prefixes, varying cases, optional filename for play
+    _re_stable = re.compile(r"new\s+stable\s+emotion:\s*(?P<emo>[a-z_]+)", re.IGNORECASE)
+    _re_play = re.compile(r"playing:\s*(?P<emo>[a-z_]+)(?:\s*\((?P<file>[^)]*)\))?", re.IGNORECASE)
 
     def on_line(self, line: str):
         ts = time.time()
@@ -160,12 +163,12 @@ class SessionRecorder:
         if not line:
             return
         self.events.append({"ts": ts, "line": line})
-        m = self._re_stable.match(line)
+        m = self._re_stable.search(line)
         if m:
             emo = m.group("emo").lower()
             self.stable_changes.append({"ts": ts, "emotion": emo})
             return
-        m = self._re_play.match(line)
+        m = self._re_play.search(line)
         if m:
             self.play_events.append({"ts": ts, "emotion": m.group("emo").lower(), "track": m.group("file")})
             return
@@ -206,7 +209,14 @@ class SessionRecorder:
         dur = end - start
         counts = self.counts_by_emotion()
         durs = self.durations_by_emotion()
-        top = max(counts.items(), key=lambda kv: kv[1])[0] if counts else None
+        # Compute top emotion more robustly: prefer duration max, else last stable, else none
+        top: Optional[str] = None
+        if any(v > 0 for v in durs.values()):
+            top = max(durs.items(), key=lambda kv: kv[1])[0]
+        elif self.stable_changes:
+            top = self.stable_changes[-1]["emotion"]
+        elif any(v > 0 for v in counts.values()):
+            top = max(counts.items(), key=lambda kv: kv[1])[0]
         return {
             "started": datetime.fromtimestamp(start).isoformat(timespec="seconds"),
             "ended": datetime.fromtimestamp(end).isoformat(timespec="seconds"),
@@ -355,8 +365,17 @@ class MainWindow(QtWidgets.QMainWindow):
         mc.addWidget(self.volumeSlider)
         row = QtWidgets.QHBoxLayout(); row.addStretch(1); self.pausePlayBtn = QtWidgets.QPushButton("Pause"); self.pausePlayBtn.setMinimumWidth(80); row.addWidget(self.pausePlayBtn); mc.addLayout(row)
         self.musicCtrlGroup.setLayout(mc); self.musicCtrlGroup.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-        previewMusicRow = QtWidgets.QHBoxLayout(); previewMusicRow.addWidget(self.previewGroup, 3); previewMusicRow.addWidget(self.musicCtrlGroup, 1)
-        runLayout.addLayout(previewMusicRow)
+        # Use a splitter for better cross-platform resizing of preview vs. music controls
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(self.previewGroup)
+        splitter.addWidget(self.musicCtrlGroup)
+        try:
+            splitter.setChildrenCollapsible(False)
+        except Exception:
+            pass
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        runLayout.addWidget(splitter, 1)
         self.musicMode = QtWidgets.QComboBox(); self.musicMode.addItems(["Local", "Spotify"])
         form.addRow("Music Mode", self.musicMode)
         self.musicDir = QtWidgets.QLineEdit(os.path.join(ROOT, "media", "mp3"))
@@ -449,8 +468,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.repStartLbl = QtWidgets.QLabel("-"); self.repEndLbl = QtWidgets.QLabel("-"); self.repEngineLbl = QtWidgets.QLabel("-"); self.repDetectorLbl = QtWidgets.QLabel("-"); self.repModelLbl = QtWidgets.QLabel("-"); self.repMusicModeLbl = QtWidgets.QLabel("-")
         metaForm.addRow("Started:", self.repStartLbl); metaForm.addRow("Ended:", self.repEndLbl); metaForm.addRow("Engine:", self.repEngineLbl); metaForm.addRow("Detector:", self.repDetectorLbl); metaForm.addRow("Model:", self.repModelLbl); metaForm.addRow("Music Mode:", self.repMusicModeLbl)
         repDetails.addWidget(metaGroup); repMain.addLayout(repDetails, 1); reportLayout.addLayout(repMain)
-        repButtons = QtWidgets.QHBoxLayout(); self.repExportCsv = QtWidgets.QPushButton("Export CSV"); self.repExportJson = QtWidgets.QPushButton("Export JSON"); self.repExportPng = QtWidgets.QPushButton("Export Chart PNG"); self.repReset = QtWidgets.QPushButton("Reset Session Data"); self.repReset.setObjectName("Ghost")
-        repButtons.addStretch(1); repButtons.addWidget(self.repExportCsv); repButtons.addWidget(self.repExportJson); repButtons.addWidget(self.repExportPng); repButtons.addStretch(1); repButtons.addWidget(self.repReset); reportLayout.addLayout(repButtons)
+        repButtons = QtWidgets.QHBoxLayout(); self.repExportCsv = QtWidgets.QPushButton("Export CSV"); self.repExportJson = QtWidgets.QPushButton("Export JSON"); self.repExportPng = QtWidgets.QPushButton("Export Chart PNG"); self.repExportHtml = QtWidgets.QPushButton("Export HTML"); self.repReset = QtWidgets.QPushButton("Reset Session Data"); self.repReset.setObjectName("Ghost")
+        repButtons.addStretch(1); repButtons.addWidget(self.repExportCsv); repButtons.addWidget(self.repExportJson); repButtons.addWidget(self.repExportPng); repButtons.addWidget(self.repExportHtml); repButtons.addStretch(1); repButtons.addWidget(self.repReset); reportLayout.addLayout(repButtons)
 
         # --- Build Logs Tab ---
         self.statusLabel = QtWidgets.QLabel("Status: stopped")
@@ -483,6 +502,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.repExportCsv.clicked.connect(self._export_report_csv)
         self.repExportJson.clicked.connect(self._export_report_json)
         self.repExportPng.clicked.connect(self._export_report_png)
+        self.repExportHtml.clicked.connect(self._export_report_html)
         self.repReset.clicked.connect(self._reset_session)
         def _pick_run_model():
             self._browse_model_out_pick()
@@ -653,6 +673,83 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.log(f"[report] PNG exported: {path}")
         except Exception as e:
             self.log(f"[report] PNG export failed: {e}")
+
+    def _export_report_html(self):
+        """Export a self-contained HTML report with summary, table, and optional embedded chart image."""
+        try:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export HTML", os.path.join(ROOT, "session_report.html"), "HTML (*.html)")
+            if not path:
+                return
+            s = self.recorder.summary()
+            counts = s.get("counts", {})
+            durs = s.get("durations", {})
+            total = float(s.get("duration_sec", 0.0)) or 0.0
+            started = s.get("started", "-")
+            ended = s.get("ended", "-")
+            # Table rows
+            emos = SessionRecorder.EMOTIONS
+            rows = []
+            for emo in emos:
+                cnt = int(counts.get(emo, 0))
+                dur = float(durs.get(emo, 0.0))
+                pct = 0.0 if total <= 0 else (100.0 * dur / total)
+                bar = f"<div style='background:#2b2b2b;width:100%;height:10px;border-radius:6px;overflow:hidden'><div style='background:#00C2A8;height:10px;width:{pct:.1f}%;'></div></div>"
+                rows.append(f"<tr><td>{emo}</td><td style='text-align:right'>{cnt}</td><td style='text-align:right'>{dur:.1f}s</td><td style='text-align:right'>{pct:.1f}%</td><td>{bar}</td></tr>")
+            # Optional embedded chart image from matplotlib
+            img_data = ""
+            if HAS_MPL:
+                try:
+                    buf = io.BytesIO()
+                    self._fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+                    buf.seek(0)
+                    b64 = base64.b64encode(buf.read()).decode("ascii")
+                    img_data = f"<img alt='Report chart' style='max-width:100%;border:1px solid #2b2b2b;border-radius:8px' src='data:image/png;base64,{b64}'/>"
+                except Exception:
+                    img_data = ""
+            # Precompute optional chart section to avoid backslashes inside f-string expressions
+            chart_html = ("<div class='card'><h2>Charts</h2>" + img_data + "</div>") if img_data else ""
+            html = f"""
+<!doctype html>
+<html><head><meta charset='utf-8'/>
+<title>Moodify Session Report</title>
+<style>
+ body{{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#111;color:#eee;}}
+ h1,h2{{font-weight:600}}
+ table{{width:100%;border-collapse:collapse;margin:10px 0;}}
+ th,td{{padding:8px;border-bottom:1px solid #333;text-align:left}}
+ .meta{{color:#bbb}}
+ .container{{max-width:980px;margin:24px auto;padding:0 16px}}
+ .card{{background:#1a1a1a;border:1px solid #2b2b2b;border-radius:8px;padding:16px;margin:12px 0}}
+ .small{{font-size:12px;color:#aaa}}
+ .kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}
+ .kpi{{background:#161a22;border:1px solid #2b2b2b;border-radius:8px;padding:12px}}
+ .kpi .v{{font-size:24px;font-weight:700}}
+ .kpi .t{{font-size:12px;color:#9aa5b1;text-transform:uppercase;letter-spacing:.3px}}
+ a.button{{display:inline-block;background:#00C2A8;color:#061116;text-decoration:none;padding:8px 12px;border-radius:6px}}
+ </style></head>
+<body><div class='container'>
+  <h1>Moodify Session Report</h1>
+  <div class='meta'>Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {total:.1f}s</div>
+  <div class='kpis'>
+    <div class='kpi'><div class='v'>{total:.1f}s</div><div class='t'>Duration</div></div>
+    <div class='kpi'><div class='v'>{int(s.get('changes',0))}</div><div class='t'>Emotion changes</div></div>
+    <div class='kpi'><div class='v'>{int(s.get('plays',0))}</div><div class='t'>Songs played</div></div>
+    <div class='kpi'><div class='v'>{s.get('top_emotion','-')}</div><div class='t'>Top emotion</div></div>
+  </div>
+  <div class='card'>
+    <h2>Summary</h2>
+    <table><thead><tr><th>Emotion</th><th style='text-align:right'>Changes</th><th style='text-align:right'>Time</th><th style='text-align:right'>Share</th><th>Distribution</th></tr></thead>
+    <tbody>{''.join(rows) if rows else '<tr><td colspan=4 class="small">No data.</td></tr>'}</tbody></table>
+  </div>
+    {chart_html}
+  <div class='small'>Generated by Moodify Desktop</div>
+</div></body></html>
+"""
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            self.log(f"[report] HTML exported: {path}")
+        except Exception as e:
+            self.log(f"[report] HTML export failed: {e}")
 
     def _reset_session(self):
         try:
@@ -1094,6 +1191,12 @@ class MainWindow(QtWidgets.QMainWindow):
         s.setValue("detect/engine", self.engineCombo.currentText()); s.setValue("detect/detector", self.detectorCombo.currentText()); s.setValue("train/detector", self.trainDetectorCombo.currentText())
 
 if __name__ == "__main__":
+    try:
+        # Enable HiDPI scaling for crisp UI on macOS/Windows
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
+    except Exception:
+        pass
     app = QtWidgets.QApplication(sys.argv)
     main = MainWindow()
     main.show()
