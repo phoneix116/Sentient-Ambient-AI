@@ -68,3 +68,29 @@ models/
 # OS junk
 Thumbs.db
 Desktop.ini
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Moodify specific
+vendor/
+dataset/
+*.pkl
+*.csv
+*.json
+.moodify_control.json
+.moodify_spotify_cache
+*.log
+*.zip
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.spec
+dist/
+build/

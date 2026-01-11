@@ -286,7 +286,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QWidget {{ background: {bg1}; color: {fg0}; font-family: -apple-system, 'SF Pro Text', 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 12.5px; }}
                 QGroupBox {{ border: 1px solid {border}; border-radius: 8px; margin-top: 12px; background: {bg2}; }}
                 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {fg1}; }}
-                QPushButton {{ background: {bg3}; color: {fg0}; border: 1px solid {border}; border-radius: 6px; padding: 6px 10px; }}
+                QPushButton {{ background: {bg3}; color: {fg0}; border: 1px solid {border}; border-radius: 6px; padding: 20px 12px; }}
                 QPushButton:hover {{ border-color: {accent}; }}
                 QPushButton:pressed {{ background: {bg2}; }}
                 QPushButton#Primary {{ background: {accent}; color: #061116; border: none; }}
@@ -431,14 +431,44 @@ class MainWindow(QtWidgets.QMainWindow):
         eah = QtWidgets.QHBoxLayout(); eah.addWidget(QtWidgets.QLabel("Embedding:")); eah.addWidget(self.embModel); eah.addSpacing(16); eah.addWidget(QtWidgets.QLabel("Algo:")); eah.addWidget(self.algCombo); eah.addSpacing(16); eah.addWidget(QtWidgets.QLabel("Detector:")); eah.addWidget(self.trainDetectorCombo); eaw = QtWidgets.QWidget(); eaw.setLayout(eah); tform.addRow("Training options", eaw)
         ash = QtWidgets.QHBoxLayout(); self.autoSearch = QtWidgets.QCheckBox("Auto pick best (grid search)"); self.maxPerClass = QtWidgets.QSpinBox(); self.maxPerClass.setRange(0, 10000); self.maxPerClass.setValue(0)
         self.maxPerClass.setToolTip("Limit images per class during search/training (0 = all)"); ash.addWidget(self.autoSearch); ash.addSpacing(12); ash.addWidget(QtWidgets.QLabel("Max imgs/class:")); ash.addWidget(self.maxPerClass); asw = QtWidgets.QWidget(); asw.setLayout(ash); tform.addRow("Auto optimize", asw)
-        capLayout = QtWidgets.QGridLayout(); self._counts = {k: QtWidgets.QLabel("0") for k in ["happy","sad","angry","neutral","fear","disgust","surprise"]}; self._capBtns = {}; self._clrBtns = {}
+        capLayout = QtWidgets.QGridLayout()
+        self._counts = {k: QtWidgets.QLabel("0") for k in ["happy","sad","angry","neutral","fear","disgust","surprise"]}
+        self._capBtns = {}
+        self._clrBtns = {}
+
         def mk_row(row: int, label: str):
-            btn = QtWidgets.QPushButton(f"Capture {label.title()}"); btn.setMinimumWidth(150); btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-            btn.clicked.connect(lambda _=None, l=label: self._capture_label(l)); capLayout.addWidget(btn, row, 0); capLayout.addWidget(QtWidgets.QLabel("Count:"), row, 1, QtCore.Qt.AlignmentFlag.AlignRight); capLayout.addWidget(self._counts[label], row, 2)
-            clr = QtWidgets.QPushButton("Clear"); clr.setToolTip(f"Delete all {label} pictures in the dataset"); clr.clicked.connect(lambda _=None, l=label: self._clear_label(l)); capLayout.addWidget(clr, row, 3)
-            self._capBtns[label] = btn; self._clrBtns[label] = clr
-        for i, lab in enumerate(["happy","sad","angry","neutral","fear","disgust","surprise"]): mk_row(i, lab)
-        capLayout.setColumnStretch(0, 1); capw = QtWidgets.QWidget(); capw.setLayout(capLayout); tform.addRow("Capture", capw)
+            btn = QtWidgets.QPushButton(f"Capture {label.title()}")
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+            btn.clicked.connect(lambda _=None, l=label: self._capture_label(l))
+            
+            count_label = QtWidgets.QLabel("Count:")
+            count_value = self._counts[label]
+            
+            clr = QtWidgets.QPushButton("Clear")
+            clr.setToolTip(f"Delete all {label} pictures in the dataset")
+            clr.clicked.connect(lambda _=None, l=label: self._clear_label(l))
+            clr.setMinimumWidth(60) # Give clear buttons a bit of space
+
+            capLayout.addWidget(btn, row, 0)
+            capLayout.addWidget(count_label, row, 1)
+            capLayout.addWidget(count_value, row, 2)
+            capLayout.addWidget(clr, row, 3)
+            
+            self._capBtns[label] = btn
+            self._clrBtns[label] = clr
+
+        for i, lab in enumerate(["happy","sad","angry","neutral","fear","disgust","surprise"]):
+            mk_row(i, lab)
+        
+        capLayout.setColumnStretch(0, 4) # Give capture button the most space
+        capLayout.setColumnStretch(1, 0)
+        capLayout.setColumnStretch(2, 0)
+        capLayout.setColumnStretch(3, 1)
+        capLayout.setSpacing(10)
+
+        capw = QtWidgets.QWidget()
+        capw.setLayout(capLayout)
+        tform.addRow("Capture", capw)
         self.trainBtn = QtWidgets.QPushButton("Train model"); self.useCustomModel = QtWidgets.QCheckBox("Use this model when starting"); self.previewBtn = QtWidgets.QPushButton("Preview dataset…"); self.clearAllBtn = QtWidgets.QPushButton("Clear all pics")
         tuh = QtWidgets.QHBoxLayout(); tuh.addWidget(self.trainBtn); tuh.addWidget(self.previewBtn); tuh.addWidget(self.clearAllBtn); tuw = QtWidgets.QWidget(); tuw.setLayout(tuh); tform.addRow("Actions", tuw); tform.addRow(self.useCustomModel)
         self.trainProgress = QtWidgets.QProgressBar(); self.trainProgress.setTextVisible(True); self.trainProgress.setVisible(False); tform.addRow("Progress", self.trainProgress)
@@ -1041,6 +1071,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_start(self):
         if self.proc and self.proc.poll() is None: self.log("[desktop] Already running"); return
+        
+        # Reset the session recorder for a new run
+        if hasattr(self, 'recorder'):
+            self.recorder.reset()
+            self._update_report_ui() # Force immediate UI clear
+
         try:
             if self.runUseModel.isChecked():
                 self.useCustomModel.setChecked(True)
@@ -1108,6 +1144,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusLabel.setText("Status: stopped"); self._set_running_ui(False)
             if hasattr(self, 'recorder'):
                 self.recorder.session_stop()
+                self._update_report_ui() # Force a final update on stop
                 self._schedule_report_update()
 
     def _start_idle_preview(self):
