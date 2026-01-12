@@ -1,4 +1,4 @@
-# Moodify
+# Sentient-Ambient-AI
 
 Smart desk lamp: webcam-driven emotion detection on your computer, smooth ambient light on an ESP32, and music played locally on your laptop.
 
